@@ -106,10 +106,6 @@ class Car:
 
     self.frogpilot_toggles = get_frogpilot_toggles()
 
-    if self.frogpilot_toggles.always_on_lateral:
-      self.CP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL
-      self.CP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.DISABLE_DISENGAGE_ON_GAS
-
     fpcp_bytes = FPCP.to_bytes()
     self.params.put("FrogPilotCarParams", fpcp_bytes)
     self.params.put_nonblocking("FrogPilotCarParamsPersistent", fpcp_bytes)

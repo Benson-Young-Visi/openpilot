@@ -175,7 +175,7 @@ frogpilot_default_params: list[tuple[str, str | bytes, int, str]] = [
   ("AggressivePersonalityProfile", "1", 2, "0"),
   ("AlertVolumeControl", "0", 2, "0"),
   ("AlwaysOnDM", "0", 0, "0"),
-  ("AlwaysOnLateral", "1", 0, "0"),
+  ("AlwaysOnLateral", "0", 0, "0"),
   ("AlwaysOnLateralLKAS", "1", 2, "0"),
   ("AlwaysOnLateralMain", "1", 2, "0"),
   ("AMapKey1", "", 0, ""),
@@ -213,6 +213,7 @@ frogpilot_default_params: list[tuple[str, str | bytes, int, str]] = [
   ("CEStoppedLead", "0", 1, "0"),
   ("ClusterOffset", "1.015", 2, "1.015"),
   ("Compass", "0", 1, "0"),
+  ("ConfidenceBall", "1", 0, "0"),
   ("ConditionalExperimental", "1", 1, "0"),
   ("CurvatureData", "", 2, ""),
   ("CurveSpeedController", "1", 1, "0"),
@@ -243,12 +244,12 @@ frogpilot_default_params: list[tuple[str, str | bytes, int, str]] = [
   ("DisableOnroadUploads", "0", 2, "0"),
   ("DisableOpenpilotLongitudinal", "0", 0, "0"),
   ("DiscordUsername", "", 0, ""),
-  ("DisengageVolume", "101", 2, "101"),
+  ("DisengageVolume", "0", 2, "101"),
   ("DistanceButtonControl", "1", 2, "0"),
   ("DriverCamera", "0", 1, "0"),
   ("DynamicPathWidth", "0", 2, "0"),
   ("DynamicPedalsOnUI", "1", 1, "0"),
-  ("EngageVolume", "101", 2, "101"),
+  ("EngageVolume", "0", 2, "101"),
   ("ExperimentalGMTune", "0", 2, "0"),
   ("ExperimentalLongitudinalEnabled", "0", 0, "0"),
   ("ExperimentalModeConfirmed", "0", 0, "0"),
@@ -468,6 +469,7 @@ frogpilot_default_params: list[tuple[str, str | bytes, int, str]] = [
   ("TacoTune", "0", 2, "0"),
   ("TacoTuneHacks", "0", 2, "0"),
   ("TetheringEnabled", "0", 0, "0"),
+  ("TorqueBar", "1", 0, "0"),
   ("ThemesDownloaded", "", 0, ""),
   ("ToyotaDoors", "1", 0, "0"),
   ("ToyotaDSUBypass", "0", 2, "0"),
@@ -555,6 +557,9 @@ class FrogPilotVariables:
 
     for k, v, _, _ in frogpilot_default_params:
       params_default.put(k, v)
+
+    # This Tiguan branch intentionally follows stock cruise-coupled lateral behavior.
+    params.put_bool("AlwaysOnLateral", False)
 
     params_memory.put("FrogPilotTuningLevels", json.dumps(self.tuning_levels))
 
@@ -751,10 +756,14 @@ class FrogPilotVariables:
     toggle.adjacent_paths = custom_ui and (params.get_bool("AdjacentPath") if toggle.tuning_level >= level["AdjacentPath"] else default.get_bool("AdjacentPath"))
     toggle.blind_spot_path = has_bsm and (custom_ui and (params.get_bool("BlindSpotPath") if toggle.tuning_level >= level["BlindSpotPath"] else default.get_bool("BlindSpotPath")) or toggle.debug_mode)
     toggle.compass = custom_ui and (params.get_bool("Compass") if toggle.tuning_level >= level["Compass"] else default.get_bool("Compass"))
+    toggle.confidence_ball = custom_ui and (
+      params.get_bool("ConfidenceBall") if toggle.tuning_level >= level["ConfidenceBall"] else default.get_bool("ConfidenceBall")
+    )
     toggle.pedals_on_ui = toggle.openpilot_longitudinal and (custom_ui and (params.get_bool("PedalsOnUI") if toggle.tuning_level >= level["PedalsOnUI"] else default.get_bool("PedalsOnUI")))
     toggle.dynamic_pedals_on_ui = toggle.pedals_on_ui and (params.get_bool("DynamicPedalsOnUI") if toggle.tuning_level >= level["DynamicPedalsOnUI"] else default.get_bool("DynamicPedalsOnUI"))
     toggle.static_pedals_on_ui = toggle.pedals_on_ui and (params.get_bool("StaticPedalsOnUI") if toggle.tuning_level >= level["StaticPedalsOnUI"] else default.get_bool("StaticPedalsOnUI"))
     toggle.rotating_wheel = custom_ui and (params.get_bool("RotatingWheel") if toggle.tuning_level >= level["RotatingWheel"] else default.get_bool("RotatingWheel"))
+    toggle.torque_bar = custom_ui and (params.get_bool("TorqueBar") if toggle.tuning_level >= level["TorqueBar"] else default.get_bool("TorqueBar"))
 
     toggle.developer_ui = params.get_bool("DeveloperUI") if toggle.tuning_level >= level["DeveloperUI"] else default.get_bool("DeveloperUI")
     developer_metrics = toggle.developer_ui and params.get_bool("DeveloperMetrics") if toggle.tuning_level >= level["DeveloperMetrics"] else default.get_bool("DeveloperMetrics")

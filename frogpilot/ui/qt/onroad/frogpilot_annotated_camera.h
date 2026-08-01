@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#include "common/util.h"
 #include "selfdrive/ui/qt/onroad/buttons.h"
 #include "selfdrive/ui/qt/widgets/cameraview.h"
 
@@ -66,6 +67,7 @@ protected:
 private:
   void paintCEMStatus(QPainter &p, const cereal::FrogPilotPlan::Reader &frogpilotPlan, FrogPilotUIScene &frogpilot_scene, SubMaster &sm);
   void paintCompass(QPainter &p, QJsonObject &frogpilot_toggles);
+  void paintConfidenceBall(QPainter &p, UIState &s, const cereal::ModelDataV2::Reader &model);
   void paintCurveSpeedControl(QPainter &p, const cereal::FrogPilotPlan::Reader &frogpilotPlan);
   void paintLateralPaused(QPainter &p, FrogPilotUIScene &frogpilot_scene);
   void paintLongitudinalPaused(QPainter &p, FrogPilotUIScene &frogpilot_scene);
@@ -77,6 +79,7 @@ private:
   void paintSpeedLimitSources(QPainter &p, const cereal::FrogPilotCarState::Reader &frogpilotCarState, const cereal::FrogPilotNavigation::Reader &frogpilotNavigation, const cereal::FrogPilotPlan::Reader &frogpilotPlan);
   void paintStandstillTimer(QPainter &p);
   void paintStoppingPoint(QPainter &p, UIScene &scene, FrogPilotUIScene &frogpilot_scene, QJsonObject &frogpilot_toggles);
+  void paintTorqueBar(QPainter &p, UIState &s, SubMaster &sm, SubMaster &fpsm);
   void paintTurnSignals(QPainter &p, const cereal::CarState::Reader &carState);
   void paintWeather(QPainter &p, const cereal::FrogPilotPlan::Reader &frogpilotPlan, FrogPilotUIScene &frogpilot_scene);
   void updateSignals();
@@ -99,6 +102,10 @@ private:
   QElapsedTimer glowTimer;
   QElapsedTimer pendingLimitTimer;
   QElapsedTimer standstillTimer;
+
+  FirstOrderFilter confidenceFilter{-0.5f, 0.5f, 1.0f / UI_FREQ};
+  FirstOrderFilter torqueAlphaFilter{0.0f, 0.1f, 1.0f / UI_FREQ};
+  FirstOrderFilter torqueFilter{0.0f, 0.1f, 1.0f / UI_FREQ};
 
   QPixmap brakePedalImg;
   QPixmap curveSpeedIcon;

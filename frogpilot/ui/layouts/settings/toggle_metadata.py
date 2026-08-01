@@ -2497,6 +2497,13 @@ APPEARANCE_TOGGLES = (
     tuning_level=1,
   ),
   ToggleDefinition(
+    title=("Driving Confidence Ball"),
+    param="ConfidenceBall",
+    description=("<b>Show the model's driving confidence</b> as a colored ball that moves vertically along the right edge of the driving screen."),
+    parent_param="CustomUI",
+    tuning_level=0,
+  ),
+  ToggleDefinition(
     title=("Driving Personality Button"),
     param="OnroadDistanceButton",
     car_params=["openpilot_longitudinal"],
@@ -2537,6 +2544,16 @@ APPEARANCE_TOGGLES = (
     description=("<b>Rotate the driving screen wheel</b> with the physical steering wheel."),
     parent_param="CustomUI",
     tuning_level=1,
+  ),
+  ToggleDefinition(
+    title=("Steering Torque Limit Bar"),
+    param="TorqueBar",
+    description=(
+      "<b>Show steering torque utilization</b> along the bottom of the driving screen. "
+      "The bar turns yellow and orange as steering approaches its limit."
+    ),
+    parent_param="CustomUI",
+    tuning_level=0,
   ),
   ToggleDefinition(
     title=("Model UI"),

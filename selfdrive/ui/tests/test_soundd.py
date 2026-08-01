@@ -1,7 +1,7 @@
 from cereal import car
 from cereal import messaging
 from cereal.messaging import SubMaster, PubMaster
-from openpilot.selfdrive.ui.soundd import CONTROLS_TIMEOUT, check_controls_timeout_alert
+from openpilot.selfdrive.ui.soundd import CONTROLS_TIMEOUT, check_controls_timeout_alert, suppress_routine_chime
 
 import time
 
@@ -9,6 +9,12 @@ AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 
 
 class TestSoundd:
+  def test_suppress_routine_chime(self):
+    assert suppress_routine_chime(AudibleAlert.engage) == AudibleAlert.none
+    assert suppress_routine_chime(AudibleAlert.disengage) == AudibleAlert.none
+    assert suppress_routine_chime(AudibleAlert.prompt) == AudibleAlert.prompt
+    assert suppress_routine_chime(AudibleAlert.warningImmediate) == AudibleAlert.warningImmediate
+
   def test_check_controls_timeout_alert(self):
     sm = SubMaster(['controlsState'])
     pm = PubMaster(['controlsState'])
@@ -32,4 +38,3 @@ class TestSoundd:
     assert check_controls_timeout_alert(sm)
 
   # TODO: add test with micd for checking that soundd actually outputs sounds
-

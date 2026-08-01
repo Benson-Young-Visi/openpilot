@@ -53,6 +53,13 @@ PandaType = log.PandaState.PandaType
 Desire = log.Desire
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
+
+
+def cruise_lateral_active(controls_active: bool, cruise_enabled: bool) -> bool:
+  """This custom branch only permits steering while the vehicle cruise system is active."""
+  return controls_active and cruise_enabled
+
+
 EventName = car.CarEvent.EventName
 FrogPilotEventName = custom.FrogPilotCarEvent.EventName
 ButtonType = car.CarState.ButtonEvent.Type
@@ -636,7 +643,7 @@ class Controls:
 
     # Check which actuators can be enabled
     standstill = CS.vEgo <= max(self.CP.minSteerSpeed, MIN_LATERAL_CONTROL_SPEED) or CS.standstill
-    CC.latActive = (self.active or self.sm['frogpilotCarState'].alwaysOnLateralEnabled) and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
+    CC.latActive = cruise_lateral_active(self.active, CS.cruiseState.enabled) and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.joystick_mode) and self.sm['frogpilotPlan'].lateralCheck and not self.sm['frogpilotCarState'].pauseLateral
     CC.longActive = self.enabled and not self.contains_event_type(ET.OVERRIDE_LONGITUDINAL) and not self.sm['frogpilotCarState'].pauseLongitudinal and self.CP.openpilotLongitudinalControl
 
