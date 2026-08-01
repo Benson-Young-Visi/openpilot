@@ -1,0 +1,48 @@
+name: "Review Pull Request"
+run-name: "Review PR #${{ github.event.pull_request.number }}"
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+
+permissions:
+  pull-requests: write
+
+env:
+  BRANCH_PR_TARGET: ${{ vars.BRANCH_PR_TARGET }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  redirect:
+    if: >-
+      ${{
+        github.repository == 'FrogAi/FrogPilot' &&
+        github.event.pull_request.base.ref != vars.BRANCH_PR_TARGET &&
+        github.event.pull_request.user.login != 'FrogAi' &&
+        (github.event.action != 'reopened' || github.actor != 'FrogAi')
+      }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          : "${BRANCH_PR_TARGET:?BRANCH_PR_TARGET is required}"
+
+          gh pr close ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --comment "Thanks for contributing! Pull requests need to target the \"$BRANCH_PR_TARGET\" branch, so this one was closed automatically. Please open a new pull request against \"$BRANCH_PR_TARGET\"."
+
+  welcome:
+    if: >-
+      ${{
+        github.event.action == 'opened' &&
+        github.event.pull_request.base.ref == vars.BRANCH_PR_TARGET &&
+        github.event.pull_request.user.login != 'FrogAi'
+      }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: >
+          gh pr comment ${{ github.event.pull_request.number }}
+          --repo ${{ github.repository }}
+          --body 'Thanks for contributing! A maintainer will review your pull
+          request soon.'
