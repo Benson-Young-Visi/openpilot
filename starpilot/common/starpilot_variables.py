@@ -412,6 +412,11 @@ class StarPilotVariables:
     self.params = Params(return_defaults=True)
     self.params_raw = Params()
     self.params_memory = Params(memory=True)
+
+    # This Tiguan branch intentionally keeps lateral control coupled to the
+    # vehicle's cruise state instead of allowing Always On Lateral.
+    self.params_raw.put_bool("AlwaysOnLateral", False)
+
     migrate_cancel_button_controls(self.params)
     migrate_aol_lkas_to_button_control(self.params)
 

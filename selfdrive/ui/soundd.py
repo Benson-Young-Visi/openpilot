@@ -47,6 +47,11 @@ def starpilot_alert_key(alert):
   return STARPILOT_CUSTOM_ALERT_OFFSET + raw_alert if raw_alert >= STARPILOT_CUSTOM_ALERT_START else raw_alert
 
 
+def suppress_audible_alert(_alert):
+  """Keep this custom Tiguan branch completely silent."""
+  return AudibleAlert.none
+
+
 sound_list: dict[int, tuple[str, int | None, float]] = {
   # AudibleAlert, file name, play count (none for infinite)
   AudibleAlert.engage: ("engage.wav", 1, MAX_VOLUME),
@@ -197,6 +202,7 @@ class Soundd:
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
+    new_alert = suppress_audible_alert(new_alert)
     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       self.current_alert = new_alert

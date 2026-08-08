@@ -1,12 +1,14 @@
 import random
 import re
 
+from opendbc.car import structs
 from opendbc.car.structs import CarParams
 from opendbc.car.volkswagen.interface import CarInterface
-from opendbc.car.volkswagen.values import CAR, FW_QUERY_CONFIG, WMI
+from opendbc.car.volkswagen.values import CAR, FW_QUERY_CONFIG, WMI, CarControllerParams
 from opendbc.car.volkswagen.fingerprints import FW_VERSIONS
 
 Ecu = CarParams.Ecu
+ButtonType = structs.CarState.ButtonEvent.Type
 
 CHASSIS_CODE_PATTERN = re.compile('[A-Z0-9]{2}')
 # TODO: determine the unknown groups
@@ -14,6 +16,17 @@ SPARE_PART_FW_PATTERN = re.compile(b'\xf1\x87(?P<gateway>[0-9][0-9A-Z]{2})(?P<un
 
 
 class TestVolkswagenPlatformConfigs:
+  def test_mqb_main_cruise_button_event(self):
+    CP = CarParams(
+      carFingerprint=CAR.VOLKSWAGEN_TIGUAN_MK2,
+      transmissionType=CarParams.TransmissionType.automatic,
+    )
+    buttons = CarControllerParams(CP).BUTTONS
+
+    assert any(button.event_type == ButtonType.mainCruise and
+               button.can_addr == "GRA_ACC_01" and
+               button.can_msg == "GRA_Hauptschalter" for button in buttons)
+
   def test_taos_longitudinal_actuator_delay(self):
     taos_cp = CarInterface.get_non_essential_params(CAR.VOLKSWAGEN_TAOS_MK1)
     golf_cp = CarInterface.get_non_essential_params(CAR.VOLKSWAGEN_GOLF_MK7)

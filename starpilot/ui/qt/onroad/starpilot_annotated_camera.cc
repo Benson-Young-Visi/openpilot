@@ -1,4 +1,7 @@
+#include <cmath>
+
 #include <QPainterPath>
+#include <QtMath>
 
 #include "starpilot/ui/qt/onroad/starpilot_annotated_camera.h"
 
@@ -150,6 +153,7 @@ void StarPilotAnnotatedCameraWidget::updateState(const UIState &s, const StarPil
   cachedCemStatus              = starpilot_toggles.value("cem_status").toBool();
   cachedColorScheme            = starpilot_toggles.value("color_scheme").toString();
   cachedCompass                = starpilot_toggles.value("compass").toBool();
+  cachedConfidenceBall         = params.getBool("StockConfidenceBallWidget");
   cachedCscStatus              = starpilot_toggles.value("csc_status").toBool();
   cachedDynamicPedalsOnUi      = starpilot_toggles.value("dynamic_pedals_on_ui").toBool();
   cachedHideSpeedLimit         = starpilot_toggles.value("hide_speed_limit").toBool();
@@ -172,6 +176,7 @@ void StarPilotAnnotatedCameraWidget::updateState(const UIState &s, const StarPil
   cachedSpeedLimitVienna       = starpilot_toggles.value("speed_limit_vienna").toBool();
   cachedStaticPedalsOnUi       = starpilot_toggles.value("static_pedals_on_ui").toBool();
   cachedStoppedTimer           = starpilot_toggles.value("stopped_timer").toBool();
+  cachedTorqueBar              = params.getBool("EnableTorqueBarWidget");
 
   if (scene.is_metric || cachedUseSiMetrics) {
     leadDistanceUnit = tr(" meters");
@@ -303,6 +308,12 @@ void StarPilotAnnotatedCameraWidget::paintStarPilotWidgets(QPainter &p, UIState 
     compassPosition = QPoint(0, 0);
     lateralPausedPosition = QPoint(0, 0);
     speedLimitHeight = 0;
+    if (cachedConfidenceBall) {
+      paintConfidenceBall(p, s);
+    }
+    if (cachedTorqueBar) {
+      paintTorqueBar(p, s);
+    }
     return;
   }
 
@@ -379,6 +390,169 @@ void StarPilotAnnotatedCameraWidget::paintStarPilotWidgets(QPainter &p, UIState 
   if (!hideBottomIcons) {
     paintWeather(p);
   }
+
+  if (cachedConfidenceBall) {
+    paintConfidenceBall(p, s);
+  }
+
+  if (cachedTorqueBar) {
+    paintTorqueBar(p, s);
+  }
+}
+
+void StarPilotAnnotatedCameraWidget::paintConfidenceBall(QPainter &p, UIState &s) {
+  const SubMaster &sm = *(s.sm);
+  const cereal::ModelDataV2::Reader &model = sm["modelV2"].getModelV2();
+  const cereal::SelfdriveState::Reader &selfdriveState = sm["selfdriveState"].getSelfdriveState();
+
+  if (s.status == STATUS_DISENGAGED) {
+    confidenceFilter.update(-0.5f);
+  } else {
+    const auto predictions = model.getMeta().getDisengagePredictions();
+    const auto brakeProbs = predictions.getBrakeDisengageProbs();
+    const auto steerProbs = predictions.getSteerOverrideProbs();
+
+    auto maximumOrOne = [](const auto &values) {
+      float maximum = values.size() > 0 ? 0.0f : 1.0f;
+      for (float value : values) {
+        maximum = std::max(maximum, value);
+      }
+      return maximum;
+    };
+
+    const float confidence = (1.0f - maximumOrOne(brakeProbs)) * (1.0f - maximumOrOne(steerProbs));
+    confidenceFilter.update(std::clamp(confidence, 0.0f, 1.0f));
+  }
+
+  QColor topColor;
+  QColor bottomColor;
+  if (selfdriveState.getEnabled()) {
+    if (confidenceFilter.x() > 0.5f) {
+      topColor = QColor(0, 255, 204);
+      bottomColor = QColor(0, 255, 38);
+    } else if (confidenceFilter.x() > 0.2f) {
+      topColor = QColor(255, 200, 0);
+      bottomColor = QColor(255, 115, 0);
+    } else {
+      topColor = QColor(255, 0, 21);
+      bottomColor = QColor(255, 0, 89);
+    }
+  } else if (s.status == STATUS_OVERRIDE) {
+    topColor = QColor(255, 255, 255);
+    bottomColor = QColor(82, 82, 82);
+  } else {
+    topColor = QColor(50, 50, 50);
+    bottomColor = QColor(13, 13, 13);
+  }
+
+  constexpr float radius = 24.0f;
+  const float dotY = (1.0f - confidenceFilter.x()) * (height() - 2.0f * radius) + radius;
+  const QPointF center(width() - radius - 8.0f, dotY);
+  const QRectF ballRect(center.x() - radius, center.y() - radius, 2.0f * radius, 2.0f * radius);
+
+  QLinearGradient gradient(ballRect.topLeft(), ballRect.bottomLeft());
+  gradient.setColorAt(0.0f, topColor);
+  gradient.setColorAt(1.0f, bottomColor);
+
+  p.save();
+  p.setPen(QPen(QColor(0, 0, 0, 220), 4.0f));
+  p.setBrush(gradient);
+  p.drawEllipse(ballRect);
+  p.restore();
+}
+
+void StarPilotAnnotatedCameraWidget::paintTorqueBar(QPainter &p, UIState &s) {
+  const SubMaster &sm = *(s.sm);
+  const SubMaster &fpsm = *(starpilotUIState()->sm);
+  const cereal::CarControl::Reader &carControl = fpsm["carControl"].getCarControl();
+  const cereal::CarState::Reader &carState = sm["carState"].getCarState();
+  const cereal::ControlsState::Reader &controlsState = sm["controlsState"].getControlsState();
+  const cereal::SelfdriveState::Reader &selfdriveState = sm["selfdriveState"].getSelfdriveState();
+
+  float torque = 0.0f;
+  if (carControl.getLatActive()) {
+    const auto lateralControlState = controlsState.getLateralControlState();
+    if (lateralControlState.isAngleState()) {
+      const float speedSquared = carState.getVEgo() * carState.getVEgo();
+      const float actualLateralAccel = controlsState.getCurvature() * speedSquared;
+      const float desiredLateralAccel = controlsState.getDesiredCurvature() * speedSquared;
+      const float roll = fpsm["liveParameters"].getLiveParameters().getRoll();
+      const float rollScale = std::clamp((carState.getVEgo() - 5.0f) / 10.0f, 0.0f, 1.0f);
+      const float rollCompensation = roll * 9.8f * rollScale;
+      const float lateralAcceleration = actualLateralAccel - rollCompensation + (desiredLateralAccel - actualLateralAccel);
+      const float maxLateralAcceleration = std::max(sm["carParams"].getCarParams().getMaxLateralAccel(), 0.1f);
+      torque = lateralAcceleration / maxLateralAcceleration;
+    } else {
+      torque = -fpsm["carOutput"].getCarOutput().getActuatorsOutput().getTorque();
+    }
+  }
+  torqueFilter.update(std::clamp(torque, -1.0f, 1.0f));
+
+  const bool engaged = selfdriveState.getEnabled();
+  const float alpha = torqueAlphaFilter.update(s.status != STATUS_DISENGAGED ? 1.0f : 0.0f);
+  if (alpha < 0.01f) {
+    return;
+  }
+
+  const float utilization = std::abs(torqueFilter.x());
+  const float sizeScale = std::clamp((utilization - 0.5f) / 0.5f, 0.0f, 1.0f);
+  const float lineOffset = 22.0f + 4.0f * sizeScale;
+  const float lineHeight = 14.0f + 42.0f * sizeScale;
+
+  constexpr float radius = 1200.0f;
+  constexpr float angleSpan = 12.7f;
+  const float midRadius = radius + lineHeight / 2.0f;
+  const QPointF center(width() / 2.0f + 8.0f, height() + radius - lineOffset);
+  const QRectF arcRect(center.x() - midRadius, center.y() - midRadius, 2.0f * midRadius, 2.0f * midRadius);
+
+  QPainterPath backgroundPath;
+  backgroundPath.arcMoveTo(arcRect, 90.0f + angleSpan / 2.0f);
+  backgroundPath.arcTo(arcRect, 90.0f + angleSpan / 2.0f, -angleSpan);
+
+  const float backgroundAlpha = engaged ? (0.25f + 0.25f * sizeScale) * alpha : 0.15f * alpha;
+  p.save();
+  p.setBrush(Qt::NoBrush);
+  p.setPen(QPen(QColor(255, 255, 255, std::lround(255.0f * backgroundAlpha)), lineHeight, Qt::SolidLine, Qt::RoundCap));
+  p.drawPath(backgroundPath);
+
+  const float torqueSweep = -angleSpan / 2.0f * torqueFilter.x();
+  if (std::abs(torqueSweep) > 0.001f) {
+    const float hot = std::clamp((utilization - 0.75f) * 4.0f, 0.0f, 1.0f);
+    auto blend = [hot, alpha](const QColor &normal, const QColor &limit) {
+      return QColor(
+        std::lround(normal.red() + (limit.red() - normal.red()) * hot),
+        std::lround(normal.green() + (limit.green() - normal.green()) * hot),
+        std::lround(normal.blue() + (limit.blue() - normal.blue()) * hot),
+        std::lround(255.0f * alpha * (hot > 0.0f ? 1.0f : 0.9f))
+      );
+    };
+
+    QColor startColor = blend(QColor(255, 255, 255), QColor(255, 200, 0));
+    QColor endColor = blend(QColor(255, 255, 255), QColor(255, 115, 0));
+    if (!engaged) {
+      startColor = endColor = QColor(255, 255, 255, std::lround(255.0f * 0.35f * alpha));
+    }
+
+    const float direction = torqueFilter.x() < 0.0f ? -1.0f : 1.0f;
+    const float gradientEndX = center.x() + direction * std::sin(qDegreesToRadians(angleSpan / 2.0f)) * midRadius * 0.65f;
+    QLinearGradient torqueGradient(center.x(), 0.0f, gradientEndX, 0.0f);
+    torqueGradient.setColorAt(0.0f, startColor);
+    torqueGradient.setColorAt(1.0f, endColor);
+
+    QPainterPath torquePath;
+    torquePath.arcMoveTo(arcRect, 90.0f);
+    torquePath.arcTo(arcRect, 90.0f, torqueSweep);
+    p.setPen(QPen(QBrush(torqueGradient), lineHeight, Qt::SolidLine, Qt::RoundCap));
+    p.drawPath(torquePath);
+  }
+
+  if (utilization < 0.5f) {
+    const float dotY = height() - lineOffset - lineHeight / 2.0f;
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(182, 182, 182, std::lround(255.0f * 0.9f * alpha)));
+    p.drawEllipse(QPointF(center.x(), dotY), 5.0f, 5.0f);
+  }
+  p.restore();
 }
 
 void StarPilotAnnotatedCameraWidget::paintAdjacentPaths(QPainter &p) {

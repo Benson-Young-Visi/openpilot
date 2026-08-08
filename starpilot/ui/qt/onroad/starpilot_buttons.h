@@ -26,16 +26,19 @@ private:
   void showEvent(QShowEvent *event) override;
   void updateTheme();
 
-  bool theme_updated;
-  bool traffic_mode_active;
+  QColor profileColor() const;
+  QString profileName() const;
 
-  int personality;
+  bool theme_updated = false;
+  bool traffic_mode_active = false;
+
+  int personality = 2;
 
   Params params_memory{"", true};
 
   QMap<int, QPair<QPixmap, QSharedPointer<QMovie>>> icon_map;
 
-  QMovie *currentGif;
+  QMovie *currentGif = nullptr;
 
   QPixmap currentImg;
 };

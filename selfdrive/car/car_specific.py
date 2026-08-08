@@ -164,6 +164,12 @@ class CarSpecificEvents:
     elif self.CP.brand == 'volkswagen':
       events = self.create_common_events(CS, CS_prev, extra_gears=extra_gears, pcm_enable=self.CP.pcmCruise)
 
+      # The Tiguan's cruise-mode button should retain its factory meaning while
+      # comma is engaged. Either edge is accepted because VW variants expose
+      # this signal as either a momentary or a latching switch.
+      if CC.enabled and any(b.type == ButtonType.mainCruise for b in CS.buttonEvents):
+        events.add(EventName.buttonCancel)
+
       if self.CP.openpilotLongitudinalControl:
         if CS.vEgo < self.CP.minEnableSpeed + 0.5:
           events.add(EventName.belowEngageSpeed)

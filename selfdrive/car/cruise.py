@@ -24,12 +24,22 @@ CRUISE_LONG_PRESS = 50
 CRUISE_NEAREST_FUNC = {
   ButtonType.accelCruise: math.ceil,
   ButtonType.decelCruise: math.floor,
+  ButtonType.resumeCruise: math.ceil,
+  ButtonType.setCruise: math.floor,
 }
 CRUISE_INTERVAL_SIGN = {
   ButtonType.accelCruise: +1,
   ButtonType.decelCruise: -1,
+  ButtonType.resumeCruise: +1,
+  ButtonType.setCruise: -1,
 }
-ACCEL_CRUISE_BUTTONS = (ButtonType.accelCruise,)
+VW_CRUISE_INTERVAL = {
+  ButtonType.accelCruise: 10,
+  ButtonType.decelCruise: 10,
+  ButtonType.resumeCruise: 1,
+  ButtonType.setCruise: 1,
+}
+ACCEL_CRUISE_BUTTONS = (ButtonType.accelCruise, ButtonType.resumeCruise)
 
 
 def is_speed_limit_confirmation_pending(starpilot_plan) -> bool:
@@ -43,10 +53,13 @@ class VCruiseHelper:
     self.v_cruise_kph = V_CRUISE_UNSET
     self.v_cruise_cluster_kph = V_CRUISE_UNSET
     self.v_cruise_kph_last = 0
-    self.button_timers = {
-      ButtonType.decelCruise: 0,
-      ButtonType.accelCruise: 0,
-    }
+    self.vw_cruise_button_mapping = (self.CP.brand == "volkswagen" and
+                                     self.CP.openpilotLongitudinalControl and
+                                     not self.CP.pcmCruise)
+    cruise_buttons = [ButtonType.decelCruise, ButtonType.accelCruise]
+    if self.vw_cruise_button_mapping:
+      cruise_buttons += [ButtonType.setCruise, ButtonType.resumeCruise]
+    self.button_timers = {button: 0 for button in cruise_buttons}
     self.button_hard_states = dict.fromkeys(self.button_timers, False)
     self.button_change_states = {btn: {"standstill": False, "enabled": False} for btn in self.button_timers}
 
@@ -111,7 +124,8 @@ class VCruiseHelper:
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric, speed_limit_changed, starpilot_toggles, starpilot_car_state=None):
     # handle button presses. TODO: this should be in state_control, but a decelCruise press
     # would have the effect of both enabling and changing speed is checked after the state transition
-    if not enabled:
+    vw_disengaged_adjustment = self.vw_cruise_button_mapping and self.v_cruise_initialized and not enabled
+    if not enabled and not vw_disengaged_adjustment:
       return
 
     long_press = False
@@ -138,6 +152,12 @@ class VCruiseHelper:
     if button_type is None:
       return
 
+    # Preserve Volkswagen's factory SET/RES behavior while disengaged. The
+    # dedicated +/- buttons can still preselect the stored comma speed before
+    # engagement, without commanding acceleration or braking.
+    if vw_disengaged_adjustment and button_type not in (ButtonType.accelCruise, ButtonType.decelCruise):
+      return
+
     # Don't adjust speed when pressing to confirm or deny speed limit changes
     if speed_limit_changed:
       return
@@ -147,12 +167,15 @@ class VCruiseHelper:
     if button_type in ACCEL_CRUISE_BUTTONS and cruise_standstill:
       return
 
-    # Don't adjust speed if we've enabled since the button was depressed (some ports enable on rising edge)
-    if not self.button_change_states[button_type]["enabled"]:
+    # Don't adjust speed if the engagement state changed while held.
+    if self.button_change_states[button_type]["enabled"] != enabled:
       return
 
-    short_interval, long_interval = self._get_cruise_delta_intervals(starpilot_toggles)
-    v_cruise_delta_interval = long_interval if long_press or button_is_hard else short_interval
+    if self.vw_cruise_button_mapping:
+      v_cruise_delta_interval = VW_CRUISE_INTERVAL[button_type]
+    else:
+      short_interval, long_interval = self._get_cruise_delta_intervals(starpilot_toggles)
+      v_cruise_delta_interval = long_interval if long_press or button_is_hard else short_interval
     v_cruise_delta = v_cruise_delta * v_cruise_delta_interval
     if v_cruise_delta_interval % 5 == 0 and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta

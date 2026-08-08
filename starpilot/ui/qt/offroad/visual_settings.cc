@@ -49,6 +49,8 @@ StarPilotVisualsPanel::StarPilotVisualsPanel(StarPilotSettingsWindow *parent, bo
     {"AdjacentPath", tr("Adjacent Lanes"), tr("<b>Show the driving paths for the left and right lanes.</b>"), ""},
     {"BlindSpotPath", tr("Blind Spot Path"), tr("<b>Show a red path when a vehicle is in that lane's blind spot.</b>"), ""},
     {"Compass", tr("Compass"), tr("<b>Show the current driving direction</b> with a simple on-screen compass."), ""},
+    {"StockConfidenceBallWidget", tr("Driving Confidence Ball"), tr("<b>Show the model's driving confidence</b> as a colored ball that moves vertically along the right edge of the driving screen."), ""},
+    {"EnableTorqueBarWidget", tr("Steering Torque Limit Bar"), tr("<b>Show steering torque utilization</b> along the bottom of the driving screen. This is a visualization only and does not alter the vehicle or panda safety limits."), ""},
     {"OnroadDistanceButton", tr("Driving Personality Button"), tr("<b>Control and view the current driving personality</b> via a driving screen widget."), ""},
     {"PedalsOnUI", tr("Gas / Brake Pedal Indicators"), tr("<b>On-screen gas and brake indicators.</b><br><br><b>Dynamic</b>: Opacity changes according to how much openpilot is accelerating or braking<br><b>Static</b>: Full when active, dim when not"), ""},
     {"RotatingWheel", tr("Rotating Steering Wheel"), tr("<b>Rotate the driving screen wheel</b> with the physical steering wheel."), ""},
@@ -71,8 +73,6 @@ StarPilotVisualsPanel::StarPilotVisualsPanel(StarPilotSettingsWindow *parent, bo
     {"CameraView", tr("Camera View"), tr("<b>Select the active camera view.</b> This is purely a visual change and doesn't impact how openpilot drives!"), ""},
     {"DriverCamera", tr("Show Driver Camera When In Reverse"), tr("<b>Show the driver camera feed</b> when the vehicle is in reverse."), ""},
     {"StoppedTimer", tr("Stopped Timer"), tr("<b>Show a timer when stopped</b> in place of the current speed to indicate how long the vehicle has been stopped."), ""},
-    {"StockConfidenceBallWidget", tr("Stock Confidence Ball Widget"), tr("<b>Use the original moving confidence ball</b> on the small comma 4 UI instead of the fixed confidence, CEM/CCM, and personality sidebar."), ""},
-
     {"DisableWideRoad", tr("Disable Wide Road Camera"), QString("<b>%1</b><br><br>%2").arg(tr("Only enable this if the wide camera is broken or for development!")).arg(tr("<b>Disabling the wide camera may degrade driving performance and cause instability.</b><br><br>Requires a reboot to take effect.")), "../../starpilot/assets/toggle_icons/icon_advanced_device.png"}
   };
 

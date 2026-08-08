@@ -11,6 +11,7 @@ namespace {
 constexpr int favorite_btn_size = btn_size;
 constexpr int favorite_indicator_size = 22;
 constexpr int favorite_slots_count = 3;
+constexpr int profile_button_width = btn_size * 2 + UI_BORDER_SIZE;
 const QString favorite_action_decrease = "__starpilot_favorite_action__:distance_decrease";
 const QString favorite_action_increase = "__starpilot_favorite_action__:distance_increase";
 const std::string favorite_action_decel_counter = "FavoriteVirtualDecelCruiseCounter";
@@ -27,7 +28,7 @@ QJsonArray parseFavoriteSlots(const std::string &raw_slots) {
 }  // namespace
 
 DrivingPersonalityButton::DrivingPersonalityButton(QWidget *parent) : QPushButton(parent) {
-  setFixedSize(btn_size + UI_BORDER_SIZE, btn_size);
+  setFixedSize(profile_button_width, btn_size);
 
   QObject::connect(starpilotUIState(), &StarPilotUIState::themeUpdated, this, &DrivingPersonalityButton::updateTheme);
   QObject::connect(this, &QPushButton::pressed, [this] {params_memory.putBool("OnroadDistanceButtonPressed", true);});
@@ -52,10 +53,10 @@ void DrivingPersonalityButton::updateTheme() {
   QPixmap traffic_img, aggressive_img, standard_img, relaxed_img;
   QSharedPointer<QMovie> traffic_gif, aggressive_gif, standard_gif, relaxed_gif;
 
-  loadImage("../../starpilot/assets/active_theme/distance_icons/traffic", traffic_img, traffic_gif, QSize(btn_size, btn_size), this);
-  loadImage("../../starpilot/assets/active_theme/distance_icons/aggressive", aggressive_img, aggressive_gif, QSize(btn_size, btn_size), this);
-  loadImage("../../starpilot/assets/active_theme/distance_icons/standard", standard_img, standard_gif, QSize(btn_size, btn_size), this);
-  loadImage("../../starpilot/assets/active_theme/distance_icons/relaxed", relaxed_img, relaxed_gif, QSize(btn_size, btn_size), this);
+  loadImage("../../starpilot/assets/active_theme/distance_icons/traffic", traffic_img, traffic_gif, QSize(img_size, img_size), this);
+  loadImage("../../starpilot/assets/active_theme/distance_icons/aggressive", aggressive_img, aggressive_gif, QSize(img_size, img_size), this);
+  loadImage("../../starpilot/assets/active_theme/distance_icons/standard", standard_img, standard_gif, QSize(img_size, img_size), this);
+  loadImage("../../starpilot/assets/active_theme/distance_icons/relaxed", relaxed_img, relaxed_gif, QSize(img_size, img_size), this);
 
   icon_map.insert(0, qMakePair(traffic_img, traffic_gif));
   icon_map.insert(1, qMakePair(aggressive_img, aggressive_gif));
@@ -92,13 +93,61 @@ void DrivingPersonalityButton::updateState(const UIState &s, const StarPilotUISt
   QPair<QPixmap, QSharedPointer<QMovie>> icon = icon_map.value(traffic_mode_active ? 0 : personality);
   currentImg = icon.first;
   currentGif = icon.second.data();
+
+  update();
+}
+
+QColor DrivingPersonalityButton::profileColor() const {
+  if (traffic_mode_active) {
+    return QColor(0xff, 0x5f, 0x57);
+  }
+
+  switch (personality) {
+    case 1: return QColor(0xff, 0x9f, 0x43);
+    case 2: return QColor(0x80, 0xd8, 0xa6);
+    case 3: return QColor(0x62, 0xae, 0xef);
+    default: return QColor(0xb0, 0xb0, 0xb0);
+  }
+}
+
+QString DrivingPersonalityButton::profileName() const {
+  if (traffic_mode_active) {
+    return QStringLiteral("TRAFFIC");
+  }
+
+  switch (personality) {
+    case 1: return QStringLiteral("AGGRESSIVE");
+    case 2: return QStringLiteral("STANDARD");
+    case 3: return QStringLiteral("RELAXED");
+    default: return QStringLiteral("—");
+  }
 }
 
 void DrivingPersonalityButton::paintEvent(QPaintEvent *event) {
   QPainter p(this);
   p.setRenderHint(QPainter::Antialiasing);
 
-  drawIcon(p, rect().center() + QPoint(UI_BORDER_SIZE / 2, 0), currentGif ? currentGif->currentPixmap() : currentImg, Qt::transparent, 1.0);
+  const QPixmap active_img = currentGif ? currentGif->currentPixmap() : currentImg;
+  const QColor color = profileColor();
+
+  p.setOpacity(isDown() ? 0.65 : 1.0);
+  p.setPen(QPen(color, 5));
+  p.setBrush(QColor(0, 0, 0, 166));
+  p.drawRoundedRect(rect().adjusted(3, 3, -3, -3), btn_size / 2, btn_size / 2);
+
+  const QRect icon_rect(UI_BORDER_SIZE, (height() - img_size) / 2, img_size, img_size);
+  p.drawPixmap(icon_rect, active_img);
+
+  const int text_left = icon_rect.right() + UI_BORDER_SIZE / 2;
+  const QRect text_rect(text_left, 0, width() - text_left - UI_BORDER_SIZE, height());
+
+  p.setPen(QColor(255, 255, 255, 210));
+  p.setFont(InterFont(19, QFont::DemiBold));
+  p.drawText(text_rect.adjusted(0, 40, 0, 0), Qt::AlignTop | Qt::AlignHCenter, QStringLiteral("DRIVING PROFILE"));
+
+  p.setPen(color);
+  p.setFont(InterFont(30, QFont::Bold));
+  p.drawText(text_rect.adjusted(0, 84, 0, 0), Qt::AlignTop | Qt::AlignHCenter, profileName());
 }
 
 FavoriteButton::FavoriteButton(int slot_index, QWidget *parent) : QPushButton(parent), slot_index(slot_index) {

@@ -61,6 +61,7 @@ protected:
 private:
   void paintCEMStatus(QPainter &p);
   void paintCompass(QPainter &p);
+  void paintConfidenceBall(QPainter &p, UIState &s);
   void paintCurveSpeedControl(QPainter &p);
   void paintCurveSpeedControlTraining(QPainter &p);
   void paintLateralPaused(QPainter &p);
@@ -73,6 +74,7 @@ private:
   void paintStandstillTimer(QPainter &p);
   void paintForceStop(QPainter &p);
   void paintStoppingPoint(QPainter &p);
+  void paintTorqueBar(QPainter &p, UIState &s);
   void paintTurnSignals(QPainter &p);
   void paintWeather(QPainter &p);
   void updateSignals();
@@ -100,6 +102,7 @@ private:
   bool cachedBlindSpotPath = false;
   bool cachedCemStatus = false;
   bool cachedCompass = false;
+  bool cachedConfidenceBall = false;
   bool cachedCscStatus = false;
   bool cachedDynamicPedalsOnUi = false;
   bool cachedHideSpeedLimit = false;
@@ -119,6 +122,7 @@ private:
   bool cachedSpeedLimitVienna = false;
   bool cachedStaticPedalsOnUi = false;
   bool cachedStoppedTimer = false;
+  bool cachedTorqueBar = false;
   double cachedLaneDetectionWidth = 3.7;
   QString cachedColorScheme;
   QString cachedPathEdgesColor;
@@ -165,6 +169,10 @@ private:
   QElapsedTimer glowTimer;
   QElapsedTimer pendingLimitTimer;
   QElapsedTimer standstillTimer;
+
+  FirstOrderFilter confidenceFilter{-0.5f, 0.5f, 1.0f / UI_FREQ};
+  FirstOrderFilter torqueAlphaFilter{0.0f, 0.1f, 1.0f / UI_FREQ};
+  FirstOrderFilter torqueFilter{0.0f, 0.1f, 1.0f / UI_FREQ};
 
   QPixmap brakePedalImg;
   QPixmap curveSpeedIcon;

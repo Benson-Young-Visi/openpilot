@@ -76,7 +76,7 @@ static void update_state(StarPilotUIState *fs) {
 
 StarPilotUIState::StarPilotUIState(QObject *parent) : QObject(parent) {
   sm = std::make_unique<SubMaster, const std::initializer_list<const char *>>({
-    "carControl", "deviceState", "starpilotCarState", "starpilotDeviceState",
+    "carControl", "carOutput", "deviceState", "starpilotCarState", "starpilotDeviceState",
     "starpilotPlan", "starpilotRadarState", "starpilotSelfdriveState", "liveDelay",
     "liveParameters", "liveTorqueParameters", "liveTracks", "mapdExtendedOut", "mapdOut", "selfdriveState"
   });
