@@ -90,7 +90,8 @@ class VCruiseHelper:
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric, speed_limit_changed, frogpilot_toggles):
     # handle button presses. TODO: this should be in state_control, but a decelCruise press
     # would have the effect of both enabling and changing speed is checked after the state transition
-    if not enabled:
+    vw_disengaged_adjustment = self.vw_cruise_button_mapping and self.v_cruise_initialized and not enabled
+    if not enabled and not vw_disengaged_adjustment:
       return
 
     long_press = False
@@ -114,6 +115,12 @@ class VCruiseHelper:
     if button_type is None:
       return
 
+    # Keep Volkswagen's factory SET/RES behavior while disengaged: SET engages at
+    # the current speed and RES resumes the stored speed. +/- can preselect that
+    # stored speed before engagement without commanding acceleration or braking.
+    if vw_disengaged_adjustment and button_type not in (ButtonType.accelCruise, ButtonType.decelCruise):
+      return
+
     # Don't adjust speed when pressing to confirm/deny speed limits
     if speed_limit_changed:
       return
@@ -123,8 +130,8 @@ class VCruiseHelper:
     if button_type in (ButtonType.accelCruise, ButtonType.resumeCruise) and cruise_standstill:
       return
 
-    # Don't adjust speed if we've enabled since the button was depressed (some ports enable on rising edge)
-    if not self.button_change_states[button_type]["enabled"]:
+    # Don't adjust speed if the engagement state changed while the button was held.
+    if self.button_change_states[button_type]["enabled"] != enabled:
       return
 
     if self.vw_cruise_button_mapping:

@@ -13,6 +13,7 @@ This branch is based on FrogPilot and is intended for a supported 2018 Volkswage
   - **+ / −:** 10 km/h steps.
   - **RES / SET:** +1 / −1 km/h steps.
   - **Cruise main:** disengages openpilot while it is engaged.
+- While openpilot is disengaged but the factory cruise master remains on, **+ / −** preselect the stored comma speed in 10 km/h steps. **RES** then re-engages at that updated speed, avoiding an initial command toward the stale set speed; **RES / SET** retain their normal factory engagement behavior while disengaged.
 
 The torque bar is a visualization of normalized steering utilization. It does not raise or otherwise modify the vehicle or panda safety torque limits.
 
