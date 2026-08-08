@@ -10,16 +10,19 @@ class DistanceButton : public QPushButton {
 public:
   explicit DistanceButton(QWidget *parent = 0);
 
-  void updateState(const UIScene &scene, const FrogPilotUIScene &frogpilot_scene);
+  void updateState(cereal::LongitudinalPersonality personality_state, bool traffic_mode_enabled);
 
 private:
   void paintEvent(QPaintEvent *event) override;
   void showEvent(QShowEvent *event) override;
   void updateTheme();
 
-  bool traffic_mode_active;
+  QColor profileColor() const;
+  QString profileName() const;
 
-  int personality;
+  bool traffic_mode_active = false;
+
+  int personality = 2;
 
   Params params_memory{"/dev/shm/params"};
 

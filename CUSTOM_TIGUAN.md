@@ -8,6 +8,7 @@ This branch is based on FrogPilot and is intended for a supported 2018 Volkswage
 - Lateral actuation is allowed only when openpilot controls are active **and** the vehicle reports cruise control active. FrogPilot's Always On Lateral safety alternative is not enabled in this branch.
 - **Driving Confidence Ball** can be switched on or off under **FrogPilot Settings → Visuals → Driving Screen Widgets**.
 - **Steering Torque Limit Bar** can be switched on or off in the same menu.
+- **Driving Personality Button** can be switched on under **FrogPilot Settings → Visuals → Driving Screen Widgets**. It shows the live **Aggressive**, **Standard**, **Relaxed**, or **Traffic** profile as both an icon and a clearly labeled, color-coded badge; the badge updates as soon as the profile changes.
 - With openpilot longitudinal control engaged, the Tiguan's factory cruise buttons adjust the comma set speed as follows:
   - **+ / −:** 10 km/h steps.
   - **RES / SET:** +1 / −1 km/h steps.
