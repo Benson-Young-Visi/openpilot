@@ -1,0 +1,270 @@
+import unittest
+
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
+import opendbc.safety.tests.common as common
+from opendbc.safety.tests.libsafety import libsafety_py
+from opendbc.safety.tests.common import make_msg
+
+
+class Buttons:
+  NONE = 0
+  RESUME = 1
+  SET = 2
+  CANCEL = 4
+
+
+PREV_BUTTON_SAMPLES = 8
+ENABLE_BUTTONS = (Buttons.RESUME, Buttons.SET, Buttons.CANCEL)
+
+
+class HyundaiButtonBase:
+  BUTTONS_TX_BUS = 0  # tx on this bus, rx on 0
+  SCC_BUS = 0  # rx on this bus
+
+  def test_button_sends(self):
+    """
+      Only RES/SET and CANCEL buttons are allowed
+      - RES/SET allowed while controls allowed
+      - CANCEL allowed while cruise is enabled
+    """
+    self.safety.set_controls_allowed(0)
+    self.assertFalse(self._tx(self._button_msg(Buttons.RESUME, bus=self.BUTTONS_TX_BUS)))
+    self.assertFalse(self._tx(self._button_msg(Buttons.SET, bus=self.BUTTONS_TX_BUS)))
+
+    self.safety.set_controls_allowed(1)
+    self.assertTrue(self._tx(self._button_msg(Buttons.RESUME, bus=self.BUTTONS_TX_BUS)))
+    self.assertTrue(self._tx(self._button_msg(Buttons.SET, bus=self.BUTTONS_TX_BUS)))
+
+    for enabled in (True, False):
+      self._rx(self._pcm_status_msg(enabled))
+      self.assertEqual(enabled, self._tx(self._button_msg(Buttons.CANCEL, bus=self.BUTTONS_TX_BUS)))
+
+  def test_enable_control_allowed_from_cruise(self):
+    """
+      Hyundai non-longitudinal only enables on PCM rising edge and recent button press. Tests PCM enabling with:
+      - disallowed: No buttons
+      - disallowed: Buttons that don't enable cruise
+      - allowed: Buttons that do enable cruise
+      - allowed: Main button with all above combinations
+    """
+    for main_button in (0, 1):
+      for btn in range(8):
+        for _ in range(PREV_BUTTON_SAMPLES):  # reset
+          self._rx(self._button_msg(Buttons.NONE))
+
+        self._rx(self._pcm_status_msg(False))
+        self.assertFalse(self.safety.get_controls_allowed())
+        self._rx(self._button_msg(btn, main_button=main_button))
+        self._rx(self._pcm_status_msg(True))
+        controls_allowed = btn in ENABLE_BUTTONS or main_button
+        self.assertEqual(controls_allowed, self.safety.get_controls_allowed())
+
+  def test_sampling_cruise_buttons(self):
+    """
+      Test that we allow controls on recent button press, but not as button leaves sliding window
+    """
+    self._rx(self._button_msg(Buttons.SET))
+    for i in range(2 * PREV_BUTTON_SAMPLES):
+      self._rx(self._pcm_status_msg(False))
+      self.assertFalse(self.safety.get_controls_allowed())
+      self._rx(self._pcm_status_msg(True))
+      controls_allowed = i < PREV_BUTTON_SAMPLES
+      self.assertEqual(controls_allowed, self.safety.get_controls_allowed())
+      self._rx(self._button_msg(Buttons.NONE))
+
+  def _toggle_aol(self, toggle_on):
+    """
+      Simulates toggling the main cruise button. The safety model requires a
+      press and release to change the main cruise state. This function
+      resets the safety model to a known state before each call.
+    """
+    if not hasattr(self, "_aol_state"):
+      self._aol_state = False
+
+    # Already in the requested state
+    if toggle_on == self._aol_state:
+      return None
+
+    # Toggle: press + release sequence
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+
+    self._aol_state = toggle_on
+    return None  # avoid duplicate message in harness
+
+
+class HyundaiLongitudinalBase(common.LongitudinalAccelSafetyTest):
+  MAX_ACCEL = 3.5
+  CANCEL_BUTTON_ENABLE = False
+
+  DISABLED_ECU_UDS_MSG: tuple[int, int]
+  DISABLED_ECU_ACTUATION_MSG: tuple[int, int]
+
+  @classmethod
+  def setUpClass(cls):
+    if cls.__name__ == "HyundaiLongitudinalBase":
+      cls.safety = None
+      raise unittest.SkipTest
+
+  # override these tests from CarSafetyTest, hyundai longitudinal uses button enable
+  def test_disable_control_allowed_from_cruise(self):
+    pass
+
+  def test_enable_control_allowed_from_cruise(self):
+    pass
+
+  def test_sampling_cruise_buttons(self):
+    pass
+
+  def test_cruise_engaged_prev(self):
+    pass
+
+  def test_button_sends(self):
+    pass
+
+  def _pcm_status_msg(self, enable):
+    raise Exception
+
+  def _accel_msg(self, accel, aeb_req=False, aeb_decel=0):
+    raise NotImplementedError
+
+  def _tx_acc_state_msg(self, main_on):
+    raise NotImplementedError
+
+  def test_set_resume_buttons(self):
+    """
+      SET and RESUME enter controls allowed on their falling edge.
+    """
+    for btn_prev in range(8):
+      for btn_cur in range(8):
+        self._rx(self._button_msg(Buttons.NONE))
+        self.safety.set_controls_allowed(0)
+        for _ in range(10):
+          self._rx(self._button_msg(btn_prev))
+          self.assertFalse(self.safety.get_controls_allowed())
+
+        # should enter controls allowed on falling edge and not transitioning to cancel
+        should_enable = btn_cur != btn_prev and \
+                        (btn_prev in (Buttons.RESUME, Buttons.SET) or (self.CANCEL_BUTTON_ENABLE and btn_prev == Buttons.CANCEL))
+        if (btn_cur == Buttons.CANCEL) and not self.CANCEL_BUTTON_ENABLE:
+          should_enable = False
+
+        self._rx(self._button_msg(btn_cur))
+        self.assertEqual(should_enable, self.safety.get_controls_allowed())
+
+  def test_cancel_button(self):
+    self.safety.set_controls_allowed(1)
+    self._rx(self._button_msg(Buttons.CANCEL))
+    self.assertEqual(self.CANCEL_BUTTON_ENABLE, self.safety.get_controls_allowed())
+
+  def test_acc_main_sync_mismatch_counter(self):
+    try:
+      tx_acc_state_msg = self._tx_acc_state_msg(False)
+    except NotImplementedError as err:
+      raise unittest.SkipTest("ACC main TX state message not implemented") from err
+
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertEqual(0, self.safety.get_acc_main_on_mismatches())
+
+    self._tx(tx_acc_state_msg)
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertEqual(1, self.safety.get_acc_main_on_mismatches())
+
+    self._tx(tx_acc_state_msg)
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertEqual(2, self.safety.get_acc_main_on_mismatches())
+
+    self._tx(tx_acc_state_msg)
+    self.assertFalse(self.safety.get_acc_main_on())
+    self.assertEqual(3, self.safety.get_acc_main_on_mismatches())
+
+    self._tx(tx_acc_state_msg)
+    self.assertEqual(0, self.safety.get_acc_main_on_mismatches())
+
+  def test_tester_present_allowed(self, ecu_disable: bool = True):
+    """
+      Ensure tester present diagnostic message is allowed to keep ECU knocked out
+      for longitudinal control.
+    """
+
+    addr, bus = self.DISABLED_ECU_UDS_MSG
+    for should_tx, msg in ((True, b"\x02\x3E\x80\x00\x00\x00\x00\x00"),
+                           (False, b"\x03\xAA\xAA\x00\x00\x00\x00\x00")):
+      tester_present = libsafety_py.make_CANPacket(addr, bus, msg)
+      self.assertEqual(should_tx and ecu_disable, self._tx(tester_present))
+
+  def test_disabled_ecu_alive(self):
+    """
+      If the ECU knockout failed, make sure the relay malfunction is shown
+    """
+
+    addr, bus = self.DISABLED_ECU_ACTUATION_MSG
+    self.assertFalse(self.safety.get_relay_malfunction())
+    self._rx(make_msg(bus, addr, 8))
+    self.assertTrue(self.safety.get_relay_malfunction())
+
+
+class HyundaiAolLkasOnEngageBase:
+  def test_acc_main_sync_does_not_clear_aol_lkas_latch(self):
+    try:
+      tx_acc_state_msg = self._tx_acc_state_msg(False)
+    except NotImplementedError as err:
+      raise unittest.SkipTest("ACC main TX state message not implemented") from err
+
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self._rx(self._button_msg(Buttons.SET))
+    self._rx(self._button_msg(Buttons.NONE))
+
+    self.safety.set_controls_allowed(False)
+    for _ in range(3):
+      self._tx(tx_acc_state_msg)
+    self.assertFalse(self.safety.get_acc_main_on())
+
+    self._set_prev_torque(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
+
+  def test_aol_lkas_auto_enables_on_set_engagement(self):
+    torque_cmd = self.MAX_RATE_UP
+
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self.safety.set_controls_allowed(False)
+
+    self._set_prev_torque(0)
+    self.assertFalse(self._tx(self._torque_cmd_msg(torque_cmd)))
+
+    self._rx(self._button_msg(Buttons.SET))
+    self._rx(self._button_msg(Buttons.NONE))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+    self._rx(self._user_brake_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._set_prev_torque(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(torque_cmd)))
+
+
+class HyundaiAolLkasOnEngageStockBase:
+  def test_aol_lkas_auto_enables_on_stock_engagement(self):
+    torque_cmd = self.MAX_RATE_UP
+
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self.safety.set_controls_allowed(False)
+
+    self._set_prev_torque(0)
+    self.assertFalse(self._tx(self._torque_cmd_msg(torque_cmd)))
+
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._button_msg(Buttons.SET))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+    self._rx(self._user_brake_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._set_prev_torque(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(torque_cmd)))

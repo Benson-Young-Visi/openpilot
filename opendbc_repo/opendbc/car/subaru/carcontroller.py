@@ -1,0 +1,252 @@
+import numpy as np
+from opendbc.can import CANPacker
+from opendbc.car import Bus, DT_CTRL, make_tester_present_msg
+from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance
+from opendbc.car.interfaces import CarControllerBase
+from opendbc.car.subaru import subarucan
+from opendbc.car.subaru.values import DBC, GLOBAL_ES_ADDR, CanBus, CarControllerParams, SubaruFlags
+from opendbc.car.vehicle_model import VehicleModel
+
+# FIXME: These limits aren't exact. The real limit is more than likely over a larger time period and
+# involves the total steering angle change rather than rate, but these limits work well for now
+MAX_STEER_RATE = 25  # deg/s
+MAX_STEER_RATE_FRAMES = 7  # tx control frames needed before torque can be cut
+
+_SNG_ACC_MIN_DIST = 3
+_SNG_ACC_MAX_DIST = 4.5
+
+
+def get_safety_CP():
+  from opendbc.car.subaru.interface import CarInterface
+  return CarInterface.get_non_essential_params("SUBARU_ASCENT")
+
+
+class CarController(CarControllerBase):
+  def __init__(self, dbc_names, CP):
+    super().__init__(dbc_names, CP)
+    self.apply_torque_last = 0
+    self.apply_steer_last = 0
+    self.driver_override = False
+
+    self.cruise_button_prev = 0
+    self.steer_rate_counter = 0
+
+    self.p = CarControllerParams(CP)
+    self.packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    self.main_bus = CanBus.main_for_cp(CP)
+    self.angle_bus = CanBus.angle_for_cp(CP)
+    self.status_bus = CanBus.camera if CP.flags & SubaruFlags.D_PLATFORM else CanBus.main
+
+    if CP.flags & SubaruFlags.LKAS_ANGLE:
+      self.VM = VehicleModel(get_safety_CP())
+
+    self.prev_close_distance = 0
+    self.epb_resume_frames_remaining = -1
+    self.last_standstill_frame = 0
+
+  def lateral_angle(self, CC, CS):
+    abs_torque = abs(CS.out.steeringTorque)
+    if abs_torque > self.p.STEER_OVERRIDE_TORQUE_HIGH:
+      self.driver_override = True
+    elif abs_torque < self.p.STEER_OVERRIDE_TORQUE_LOW:
+      self.driver_override = False
+
+    lat_active = CC.latActive and not self.driver_override
+    apply_steer = apply_steer_angle_limits_vm(
+      CC.actuators.steeringAngleDeg,
+      self.apply_steer_last,
+      CS.out.vEgoRaw,
+      CS.out.steeringAngleDeg,
+      lat_active,
+      self.p,
+      self.VM,
+    )
+
+    if not lat_active:
+      apply_steer = CS.out.steeringAngleDeg
+
+    self.apply_steer_last = apply_steer
+    return subarucan.create_steering_control_angle(self.packer, apply_steer, lat_active, self.angle_bus)
+
+  def lateral_torque(self, CC, CS):
+    apply_torque = int(round(CC.actuators.torque * self.p.STEER_MAX))
+    apply_torque = apply_driver_steer_torque_limits(apply_torque, self.apply_torque_last, CS.out.steeringTorque, self.p)
+
+    if not CC.latActive:
+      apply_torque = 0
+
+    self.apply_torque_last = apply_torque
+
+    if self.CP.flags & SubaruFlags.PREGLOBAL:
+      return subarucan.create_preglobal_steering_control(
+        self.packer, self.frame // self.p.STEER_STEP, apply_torque, CC.latActive,
+      )
+
+    apply_steer_req = CC.latActive
+    if self.CP.flags & SubaruFlags.STEER_RATE_LIMITED:
+      self.steer_rate_counter, apply_steer_req = common_fault_avoidance(
+        abs(CS.out.steeringRateDeg) > MAX_STEER_RATE,
+        apply_steer_req,
+        self.steer_rate_counter,
+        MAX_STEER_RATE_FRAMES,
+      )
+
+    return subarucan.create_steering_control(self.packer, apply_torque, apply_steer_req)
+
+  def update(self, CC, CS, now_nanos, starpilot_toggles):
+    actuators = CC.actuators
+    hud_control = CC.hudControl
+    pcm_cancel_cmd = CC.cruiseControl.cancel
+
+    can_sends = []
+
+    # *** steering ***
+    if (self.frame % self.p.STEER_STEP) == 0:
+      if self.CP.flags & SubaruFlags.LKAS_ANGLE:
+        can_sends.append(self.lateral_angle(CC, CS))
+      else:
+        can_sends.append(self.lateral_torque(CC, CS))
+
+    # *** stop and go ***
+    subaru_sng_manual_parking_brake = getattr(starpilot_toggles, "subaru_sng_manual_parking_brake", False)
+    if starpilot_toggles.subaru_sng:
+      throttle_cmd, speed_cmd = self.stop_and_go(CC, CS, subaru_sng_manual_parking_brake)
+
+    # *** longitudinal ***
+
+    if CC.longActive:
+      apply_throttle = int(round(np.interp(actuators.accel, CarControllerParams.THROTTLE_LOOKUP_BP, CarControllerParams.THROTTLE_LOOKUP_V)))
+      apply_rpm = int(round(np.interp(actuators.accel, CarControllerParams.RPM_LOOKUP_BP, CarControllerParams.RPM_LOOKUP_V)))
+      apply_brake = int(round(np.interp(actuators.accel, CarControllerParams.BRAKE_LOOKUP_BP, CarControllerParams.BRAKE_LOOKUP_V)))
+
+      # limit min and max values
+      cruise_throttle = np.clip(apply_throttle, CarControllerParams.THROTTLE_MIN, CarControllerParams.THROTTLE_MAX)
+      cruise_rpm = np.clip(apply_rpm, CarControllerParams.RPM_MIN, CarControllerParams.RPM_MAX)
+      cruise_brake = np.clip(apply_brake, CarControllerParams.BRAKE_MIN, CarControllerParams.BRAKE_MAX)
+    else:
+      cruise_throttle = CarControllerParams.THROTTLE_INACTIVE
+      cruise_rpm = CarControllerParams.RPM_MIN
+      cruise_brake = CarControllerParams.BRAKE_MIN
+
+    # *** alerts and pcm cancel ***
+    if self.CP.flags & SubaruFlags.PREGLOBAL:
+      if self.frame % 5 == 0:
+        # 1 = main, 2 = set shallow, 3 = set deep, 4 = resume shallow, 5 = resume deep
+        # disengage ACC when OP is disengaged
+        if pcm_cancel_cmd:
+          cruise_button = 1
+        # turn main on if off and past start-up state
+        elif not CS.out.cruiseState.available and CS.ready:
+          cruise_button = 1
+        else:
+          cruise_button = CS.cruise_button
+
+        # unstick previous mocked button press
+        if cruise_button == 1 and self.cruise_button_prev == 1:
+          cruise_button = 0
+        self.cruise_button_prev = cruise_button
+
+        can_sends.append(subarucan.create_preglobal_es_distance(self.packer, cruise_button, CS.es_distance_msg))
+
+      if starpilot_toggles.subaru_sng:
+        can_sends.append(subarucan.create_preglobal_throttle(self.packer, CS.throttle_msg["COUNTER"] + 1, CS.throttle_msg,
+                                                             throttle_cmd))
+        if self.frame % 2 == 0:
+          can_sends.append(subarucan.create_preglobal_brake_pedal(self.packer, CS.brake_pedal_msg,
+                                                                  speed_cmd))
+    else:
+      if self.frame % 10 == 0:
+        can_sends.append(subarucan.create_es_dashstatus(self.packer, self.frame // 10, CS.es_dashstatus_msg, CC.enabled,
+                                                        self.CP.openpilotLongitudinalControl, CC.longActive, hud_control.leadVisible,
+                                                        self.status_bus))
+
+        can_sends.append(subarucan.create_es_lkas_state(self.packer, self.frame // 10, CS.es_lkas_state_msg, CC.enabled, hud_control.visualAlert,
+                                                        hud_control.leftLaneVisible, hud_control.rightLaneVisible,
+                                                        hud_control.leftLaneDepart, hud_control.rightLaneDepart, self.status_bus))
+
+        if self.CP.flags & SubaruFlags.SEND_INFOTAINMENT:
+          can_sends.append(subarucan.create_es_infotainment(self.packer, self.frame // 10, CS.es_infotainment_msg,
+                                                           hud_control.visualAlert, self.status_bus))
+
+      if starpilot_toggles.subaru_sng:
+        can_sends.append(subarucan.create_throttle(self.packer, CS.throttle_msg["COUNTER"] + 1, CS.throttle_msg,
+                                                   throttle_cmd))
+        if self.frame % 2 == 0:
+          can_sends.append(subarucan.create_brake_pedal(self.packer, self.frame // 2, CS.brake_pedal_msg,
+                                                        speed_cmd, pcm_cancel_cmd))
+
+      if self.CP.openpilotLongitudinalControl:
+        if self.frame % 5 == 0:
+          can_sends.append(subarucan.create_es_status(self.packer, self.frame // 5, CS.es_status_msg,
+                                                      self.CP.openpilotLongitudinalControl, CC.longActive, cruise_rpm))
+
+          can_sends.append(subarucan.create_es_brake(self.packer, self.frame // 5, CS.es_brake_msg,
+                                                     self.CP.openpilotLongitudinalControl, CC.longActive, cruise_brake))
+
+          can_sends.append(subarucan.create_es_distance(self.packer, self.frame // 5, CS.es_distance_msg, 0, pcm_cancel_cmd,
+                                                        self.CP.openpilotLongitudinalControl, cruise_brake > 0, cruise_throttle))
+      else:
+        if pcm_cancel_cmd:
+          if not (self.CP.flags & SubaruFlags.HYBRID):
+            bus = CanBus.alt_for_cp(self.CP) if self.CP.flags & SubaruFlags.GLOBAL_GEN2 else self.main_bus
+            can_sends.append(subarucan.create_es_distance(self.packer, CS.es_distance_msg["COUNTER"] + 1, CS.es_distance_msg, bus, pcm_cancel_cmd))
+
+      if self.CP.flags & SubaruFlags.DISABLE_EYESIGHT:
+        # Tester present (keeps eyesight disabled)
+        if self.frame % 100 == 0:
+          can_sends.append(make_tester_present_msg(GLOBAL_ES_ADDR, CanBus.camera, suppress_response=True))
+
+        # Create all of the other eyesight messages to keep the rest of the car happy when eyesight is disabled
+        if self.frame % 5 == 0:
+          can_sends.append(subarucan.create_es_highbeamassist(self.packer))
+
+        if self.frame % 10 == 0:
+          can_sends.append(subarucan.create_es_static_1(self.packer))
+
+        if self.frame % 2 == 0:
+          can_sends.append(subarucan.create_es_static_2(self.packer))
+
+    new_actuators = actuators.as_builder()
+    if self.CP.flags & SubaruFlags.LKAS_ANGLE:
+      new_actuators.steeringAngleDeg = self.apply_steer_last
+    else:
+      new_actuators.torque = self.apply_torque_last / self.p.STEER_MAX
+      new_actuators.torqueOutputCan = self.apply_torque_last
+
+    self.frame += 1
+    return new_actuators, can_sends
+
+  def stop_and_go(self, CC, CS, manual_parking_brake=False):
+    throttle_cmd = False
+    speed_cmd = False
+
+    if not CC.enabled or not CC.hudControl.leadVisible:
+      return throttle_cmd, speed_cmd
+
+    close_distance = CS.close_distance
+    if not CS.out.standstill:
+      self.last_standstill_frame = self.frame
+
+    standstill_timers = (0.75, 0.8) if self.CP.flags & SubaruFlags.PREGLOBAL else (0.5, 0.55)
+    standstill_duration = (self.frame - self.last_standstill_frame) * DT_CTRL
+    in_standstill_hold = standstill_duration > standstill_timers[0]
+    if standstill_duration >= standstill_timers[1]:
+      self.last_standstill_frame = self.frame
+
+    if manual_parking_brake or not (self.CP.flags & SubaruFlags.PREGLOBAL):
+      speed_cmd = in_standstill_hold
+
+    should_resume = (
+      CS.out.standstill and
+      _SNG_ACC_MIN_DIST < close_distance < _SNG_ACC_MAX_DIST and
+      close_distance > self.prev_close_distance
+    )
+    if should_resume:
+      self.epb_resume_frames_remaining = 15
+
+    throttle_cmd = self.epb_resume_frames_remaining > 0
+    if self.epb_resume_frames_remaining > 0:
+      self.epb_resume_frames_remaining -= 1
+
+    self.prev_close_distance = close_distance
+    return throttle_cmd, speed_cmd

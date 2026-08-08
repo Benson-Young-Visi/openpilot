@@ -1,0 +1,559 @@
+import os
+import numpy as np
+import time
+import tomllib
+from abc import abstractmethod, ABC
+from enum import StrEnum
+from typing import Any
+from collections.abc import Callable
+from functools import cache
+from types import SimpleNamespace
+
+from cereal import custom
+from opendbc.car import DT_CTRL, apply_hysteresis, create_button_events, gen_empty_fingerprint, scale_rot_inertia, scale_tire_stiffness, STD_CARGO_KG
+from opendbc.car import structs
+from opendbc.car.can_definitions import CanData, CanRecvCallable, CanSendCallable
+from opendbc.car.chrysler.values import CAR as CHRYSLER, ChryslerStarPilotFlags
+from opendbc.car.common.basedir import BASEDIR
+from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.common.simple_kalman import KF1D, get_kalman_gain
+from opendbc.car.gm.values import CAR as GM
+from opendbc.car.honda.values import CAR as HONDA, HONDA_BOSCH, HondaFlags, HondaSafetyFlags, HondaStarPilotFlags
+from opendbc.car.hyundai.hyundaicanfd import CanBus
+from opendbc.car.hyundai.values import CAR as HYUNDAI, CANFD_CAR, HyundaiFlags, HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, ALT_BUS_LDA_BUTTON_CARS
+from opendbc.car.mock.values import CAR as MOCK
+from opendbc.car.subaru.values import CAR as SUBARU, SubaruSafetyFlags
+from opendbc.car.toyota.values import CAR as TOYOTA, NO_DSU_CAR, TSS2_CAR, UNSUPPORTED_DSU_CAR, ToyotaStarPilotFlags, ToyotaSafetyFlags
+from opendbc.car.values import PLATFORMS
+from opendbc.can import CANParser
+from openpilot.common.params import Params
+from openpilot.starpilot.common.testing_grounds import testing_ground
+
+GearShifter = structs.CarState.GearShifter
+ButtonType = structs.CarState.ButtonEvent.Type
+
+Ecu = structs.CarParams.Ecu
+
+V_CRUISE_MAX = 145
+MAX_CTRL_SPEED = (V_CRUISE_MAX + 4) * CV.KPH_TO_MS
+ACCEL_MAX = 2.0
+ACCEL_MIN = -3.5
+
+TORQUE_PARAMS_PATH = os.path.join(BASEDIR, 'torque_data/params.toml')
+TORQUE_OVERRIDE_PATH = os.path.join(BASEDIR, 'torque_data/override.toml')
+TORQUE_SUBSTITUTE_PATH = os.path.join(BASEDIR, 'torque_data/substitute.toml')
+
+GEAR_SHIFTER_MAP: dict[str, structs.CarState.GearShifter] = {
+  'P': GearShifter.park, 'PARK': GearShifter.park,
+  'R': GearShifter.reverse, 'REVERSE': GearShifter.reverse,
+  'N': GearShifter.neutral, 'NEUTRAL': GearShifter.neutral,
+  'E': GearShifter.eco, 'ECO': GearShifter.eco,
+  'T': GearShifter.manumatic, 'MANUAL': GearShifter.manumatic,
+  'D': GearShifter.drive, 'DRIVE': GearShifter.drive,
+  'S': GearShifter.sport, 'SPORT': GearShifter.sport,
+  'L': GearShifter.low, 'LOW': GearShifter.low,
+  'L2': GearShifter.low, 'L3': GearShifter.low,
+  'B': GearShifter.brake, 'BRAKE': GearShifter.brake,
+}
+
+TorqueFromLateralAccelCallbackType = Callable[[float, structs.CarParams.LateralTorqueTuning, bool], float]
+LateralAccelFromTorqueCallbackType = Callable[[float, structs.CarParams.LateralTorqueTuning, bool], float]
+
+
+@cache
+def get_torque_params():
+  with open(TORQUE_SUBSTITUTE_PATH, 'rb') as f:
+    sub = tomllib.load(f)
+  with open(TORQUE_PARAMS_PATH, 'rb') as f:
+    params = tomllib.load(f)
+  with open(TORQUE_OVERRIDE_PATH, 'rb') as f:
+    override = tomllib.load(f)
+
+  def resolve_sub_candidate(candidate: str) -> str:
+    chain: list[str] = []
+    seen: set[str] = set()
+    out = candidate
+    while out in sub:
+      if out in seen:
+        raise RuntimeError(f"Found cycle in torque substitute config: {' -> '.join(chain + [out])}")
+      chain.append(out)
+      seen.add(out)
+      out = sub[out]
+    return out
+
+  torque_params = {}
+  for candidate in (sub.keys() | params.keys() | override.keys()) - {'legend'}:
+    if sum([candidate in x for x in [sub, params, override]]) > 1:
+      raise RuntimeError(f'{candidate} is defined twice in torque config')
+
+    sub_candidate = resolve_sub_candidate(candidate)
+
+    if sub_candidate in override:
+      out = override[sub_candidate]
+    elif sub_candidate in params:
+      out = params[sub_candidate]
+    else:
+      raise NotImplementedError(f"Did not find torque params for {sub_candidate}")
+
+    torque_params[sub_candidate] = {key: out[i] for i, key in enumerate(params['legend'])}
+    if candidate in sub:
+      torque_params[candidate] = torque_params[sub_candidate]
+
+  return torque_params
+
+# generic car and radar interfaces
+
+
+class RadarInterfaceBase(ABC):
+  def __init__(self, CP: structs.CarParams):
+    self.CP = CP
+    self.rcp = None
+    self.pts: dict[int, structs.RadarData.RadarPoint] = {}
+    self.frame = 0
+
+  def update(self, can_packets: list[tuple[int, list[CanData]]]) -> structs.RadarDataT | None:
+    self.frame += 1
+    if (self.frame % 5) == 0:  # 20 Hz is very standard
+      return structs.RadarData()
+    return None
+
+
+class CarInterfaceBase(ABC):
+  CarState: 'CarStateBase'
+  CarController: 'CarControllerBase'
+  RadarInterface: 'RadarInterfaceBase' = RadarInterfaceBase
+
+  def __init__(self, CP: structs.CarParams, FPCP: custom.StarPilotCarParams):
+    self.CP = CP
+
+    self.frame = 0
+    self.v_ego_cluster_seen = False
+
+    self.CS: CarStateBase = self.CarState(CP, FPCP)
+    self.can_parsers: dict[StrEnum, CANParser] = self.CS.get_can_parsers(CP)
+
+    dbc_names = {bus: cp.dbc_name for bus, cp in self.can_parsers.items()}
+    self.CC: CarControllerBase = self.CarController(dbc_names, CP)
+    self.CC.FPCP = FPCP
+
+    self.FPCP = FPCP
+
+    self.params_memory = Params(memory=True)
+
+    self.onroad_distance_button = False
+    self.physical_distance_button = False
+
+  def apply(self, c: structs.CarControl, now_nanos: int | None = None, starpilot_toggles: SimpleNamespace = None) -> tuple[structs.CarControl.Actuators, list[CanData]]:
+    if now_nanos is None:
+      now_nanos = int(time.monotonic() * 1e9)
+    return self.CC.update(c, self.CS, now_nanos, starpilot_toggles)
+
+  @staticmethod
+  def get_pid_accel_limits(CP, current_speed, cruise_speed):
+    return ACCEL_MIN, ACCEL_MAX
+
+  @classmethod
+  def get_non_essential_params(cls, candidate: str) -> structs.CarParams:
+    """
+    Parameters essential to controlling the car may be incomplete or wrong without FW versions or fingerprints.
+    """
+    return cls.get_params(candidate, gen_empty_fingerprint(), list(), False, False, False, None)
+
+  @classmethod
+  def get_params(cls, candidate: str, fingerprint: dict[int, dict[int, int]], car_fw: list[structs.CarParams.CarFw],
+                 alpha_long: bool, is_release: bool, docs: bool, starpilot_toggles: SimpleNamespace) -> structs.CarParams:
+    ret = CarInterfaceBase.get_std_params(candidate)
+
+    platform = PLATFORMS[candidate]
+    ret.mass = platform.config.specs.mass
+    ret.wheelbase = platform.config.specs.wheelbase
+    ret.steerRatio = platform.config.specs.steerRatio
+    ret.centerToFront = ret.wheelbase * platform.config.specs.centerToFrontRatio
+    ret.minEnableSpeed = platform.config.specs.minEnableSpeed
+    ret.minSteerSpeed = platform.config.specs.minSteerSpeed
+    ret.tireStiffnessFactor = platform.config.specs.tireStiffnessFactor
+    ret.flags |= int(platform.config.flags)
+
+    ret = cls._get_params(ret, candidate, fingerprint, car_fw, alpha_long, is_release, docs)
+
+    trailer_load_kg = float(np.clip(getattr(starpilot_toggles, "trailer_load_kg", 0.0) or 0.0, 0.0, 15000.0 * CV.LB_TO_KG))
+
+    # Vehicle mass is published curb weight plus assumed payload such as a human driver; notCars have no assumed payload
+    if not ret.notCar:
+      ret.mass = ret.mass + trailer_load_kg
+      ret.mass = ret.mass + STD_CARGO_KG
+
+    # Set params dependent on values set by the car interface
+    ret.rotationalInertia = scale_rot_inertia(ret.mass, ret.wheelbase)
+    ret.tireStiffnessFront, ret.tireStiffnessRear = scale_tire_stiffness(ret.mass, ret.wheelbase, ret.centerToFront, ret.tireStiffnessFactor)
+
+    toggles_to_check = ("force_torque_controller", "nnff", "nnff_lite")
+    modified_civic_force_torque = (
+      candidate == HONDA.HONDA_CIVIC_BOSCH and
+      bool(ret.flags & HondaFlags.EPS_MODIFIED)
+    )
+    if ret.steerControlType != structs.CarParams.SteerControlType.angle and (
+      any(getattr(starpilot_toggles, toggle, False) for toggle in toggles_to_check) or
+      modified_civic_force_torque
+    ):
+      CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
+
+    return ret
+
+  @classmethod
+  def get_starpilot_params(cls, candidate: str, fingerprint: dict[int, dict[int, int]], car_fw: list[structs.CarParams.CarFw], CP: structs.CarParams, starpilot_toggles: SimpleNamespace):
+    fp_ret = custom.StarPilotCarParams.new_message()
+    fp_ret.pcmCruiseSpeed = True
+    params = Params(return_defaults=True)
+
+    platform = PLATFORMS[candidate]
+
+    fp_ret.flags |= int(platform.config.flags)
+    fp_ret.safetyConfigs = [custom.StarPilotCarParams.SafetyConfig.new_message(safetyParam=config.safetyParam) for config in CP.safetyConfigs]
+
+    if platform not in MOCK:
+      if platform in CHRYSLER:
+        if 0x4FF in fingerprint[0]:
+          fp_ret.flags |= ChryslerStarPilotFlags.NO_MIN_STEERING_SPEED.value
+          CP.minSteerSpeed = 0.
+
+      elif platform in GM:
+        fp_ret.canUsePedal = True
+
+      elif platform in HONDA:
+        fp_ret.canUsePedal = candidate not in HONDA_BOSCH
+        if any(0x35E in bus_fingerprint for bus_fingerprint in fingerprint.values()):
+          fp_ret.flags |= int(HondaStarPilotFlags.HAS_CAMERA_MESSAGES)
+
+      elif platform in HYUNDAI:
+        if CP.openpilotLongitudinalControl and not (CP.flags & HyundaiFlags.CANFD):
+          fp_ret.flags |= HyundaiStarPilotFlags.MAIN_CRUISE_STATE_TRACKING.value
+
+        if candidate in CANFD_CAR:
+          hda2 = Ecu.adas in [fw.ecu for fw in car_fw]
+          CAN = CanBus(None, fingerprint, bool(CP.flags & HyundaiFlags.CANFD_LKA_STEERING))
+
+          fp_ret.isHDA2 = hda2
+          if 0x1FA in fingerprint[CAN.ECAN]:
+            fp_ret.flags |= HyundaiStarPilotFlags.SPEED_LIMIT_AVAILABLE.value
+
+        fp_ret.redneckCruiseAvailable = bool(CP.flags & HyundaiFlags.NON_SCC) and not bool(CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS)
+        if fp_ret.redneckCruiseAvailable and params.get_bool("RedneckCruise"):
+          fp_ret.pcmCruiseSpeed = False
+          CP.openpilotLongitudinalControl = True
+
+        hyundai_has_lda_button = (
+          0x391 in fingerprint[0] or
+          0x50C in fingerprint[0] or
+          candidate in ALT_BUS_LDA_BUTTON_CARS or
+          bool(CP.flags & HyundaiFlags.CAN_CANFD_BLENDED)
+        )
+        if hyundai_has_lda_button:
+          fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.HAS_LDA_BUTTON.value
+
+        if getattr(starpilot_toggles, "always_on_lateral_lkas", False):
+          fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE.value
+
+        # LKASButtonControl == 9 means BUTTON_FUNCTIONS["AOL_TOGGLE"] in starpilot_variables.
+        if params.get_bool("AlwaysOnLateral") and params.get_int("LKASButtonControl") == 9:
+          fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE.value
+
+        if candidate == HYUNDAI.HYUNDAI_SONATA_HYBRID and getattr(starpilot_toggles, "always_on_lateral_lkas", False) and \
+            getattr(starpilot_toggles, "main_cruise_aol_toggle", False):
+          fp_ret.safetyConfigs[-1].safetyParam |= HyundaiStarPilotSafetyFlags.AOL_MAIN_LKAS_SYNC.value
+      elif platform in TOYOTA:
+        fp_ret.canUsePedal = not CP.autoResumeSng
+        fp_ret.canUseSDSU = candidate not in UNSUPPORTED_DSU_CAR and candidate not in TSS2_CAR
+
+        if 0x2AA in fingerprint[0] and candidate in NO_DSU_CAR:
+          fp_ret.flags |= ToyotaStarPilotFlags.RADAR_CAN_FILTER.value
+
+        if 0x2FF in fingerprint[0] or (0x2AA in fingerprint[0] and candidate in NO_DSU_CAR):
+          fp_ret.flags |= ToyotaStarPilotFlags.SMART_DSU.value
+
+        if candidate == TOYOTA.TOYOTA_PRIUS:
+          if 0x23 in fingerprint[0]:
+            fp_ret.flags |= ToyotaStarPilotFlags.ZSS.value
+
+      elif platform.config.platform_str == "TESLA_MODEL_S_PREAP":
+        fp_ret.canUsePedal = True
+
+      elif platform in SUBARU:
+        if getattr(starpilot_toggles, "subaru_sng", False):
+          fp_ret.safetyConfigs[-1].safetyParam |= SubaruSafetyFlags.STOP_AND_GO.value
+
+    return fp_ret
+
+  @staticmethod
+  @abstractmethod
+  def _get_params(ret: structs.CarParams, candidate, fingerprint: dict[int, dict[int, int]],
+                  car_fw: list[structs.CarParams.CarFw], alpha_long: bool, is_release: bool, docs: bool) -> structs.CarParams:
+    raise NotImplementedError
+
+  @staticmethod
+  def init(CP: structs.CarParams, can_recv: CanRecvCallable, can_send: CanSendCallable):
+    """Used to disable longitudinal ECUs as needed"""
+
+  @staticmethod
+  def deinit(CP: structs.CarParams, can_recv: CanRecvCallable, can_send: CanSendCallable):
+    """Used to re-enable longitudinal ECUs as needed"""
+
+  @staticmethod
+  def get_steer_feedforward_default(desired_angle, v_ego):
+    # Proportional to realigning tire momentum: lateral acceleration.
+    return desired_angle * (v_ego**2)
+
+  def get_steer_feedforward_function(self):
+    return self.get_steer_feedforward_default
+
+  def torque_from_lateral_accel_linear(self, lateral_acceleration: float, torque_params: structs.CarParams.LateralTorqueTuning) -> float:
+    # The default is a linear relationship between torque and lateral acceleration (accounting for road roll and steering friction)
+    return lateral_acceleration / float(torque_params.latAccelFactor)
+
+  def torque_from_lateral_accel(self) -> TorqueFromLateralAccelCallbackType:
+    return self.torque_from_lateral_accel_linear
+
+  def lateral_accel_from_torque_linear(self, torque: float, torque_params: structs.CarParams.LateralTorqueTuning) -> float:
+    return torque * float(torque_params.latAccelFactor)
+
+  def lateral_accel_from_torque(self) -> LateralAccelFromTorqueCallbackType:
+    return self.lateral_accel_from_torque_linear
+
+  # returns a set of default params to avoid repetition in car specific params
+  @staticmethod
+  def get_std_params(candidate: str) -> structs.CarParams:
+    ret = structs.CarParams()
+    ret.carFingerprint = candidate
+
+    # Car docs fields
+    ret.maxLateralAccel = get_torque_params()[candidate]['MAX_LAT_ACCEL_MEASURED']
+    ret.autoResumeSng = True  # describes whether car can resume from a stop automatically
+
+    # standard ALC params
+    ret.tireStiffnessFactor = 1.0
+    ret.steerControlType = structs.CarParams.SteerControlType.torque
+    ret.minSteerSpeed = 0.
+    ret.wheelSpeedFactor = 1.0
+
+    ret.pcmCruise = True     # openpilot's state is tied to the PCM's cruise state on most cars
+    ret.minEnableSpeed = -1. # enable is done by stock ACC, so ignore this
+    ret.steerRatioRear = 0.  # no rear steering, at least on the listed cars aboveA
+    ret.openpilotLongitudinalControl = False
+    ret.stopAccel = -2.0
+    ret.stoppingDecelRate = 0.8 # brake_travel/s while trying to stop
+    ret.vEgoStopping = 0.5
+    ret.vEgoStarting = 0.5
+    ret.longitudinalTuning.kpBP = [0.]
+    ret.longitudinalTuning.kpV = [0.]
+    ret.longitudinalTuning.kiBP = [0.]
+    ret.longitudinalTuning.kiV = [0.]
+    # TODO estimate car specific lag, use .15s for now
+    ret.longitudinalActuatorDelay = 0.15
+    ret.steerLimitTimer = 1.0
+    return ret
+
+  @staticmethod
+  def configure_torque_tune(candidate: str, tune: structs.CarParams.LateralTuning, steering_angle_deadzone_deg: float = 0.0):
+    params = get_torque_params()[candidate]
+
+    tune.init('torque')
+    tune.torque.friction = params['FRICTION']
+    tune.torque.latAccelFactor = params['LAT_ACCEL_FACTOR']
+    tune.torque.latAccelOffset = 0.0
+    tune.torque.steeringAngleDeadzoneDeg = steering_angle_deadzone_deg
+
+  def update(self, can_packets: list[tuple[int, list[CanData]]], starpilot_toggles: SimpleNamespace) -> structs.CarState:
+    # parse can
+    for cp in self.can_parsers.values():
+      if cp is not None:
+        cp.update(can_packets)
+
+    # get CarState
+    ret, fp_ret = self.CS.update(self.can_parsers, starpilot_toggles)
+
+    ret.canValid = all(cp.can_valid for cp in self.can_parsers.values())
+    ret.canTimeout = any(cp.bus_timeout for cp in self.can_parsers.values())
+
+    if ret.vEgoCluster == 0.0 and not self.v_ego_cluster_seen:
+      ret.vEgoCluster = ret.vEgo
+    else:
+      self.v_ego_cluster_seen = True
+
+    # Many cars apply hysteresis to the ego dash speed
+    ret.vEgoCluster = apply_hysteresis(ret.vEgoCluster, self.CS.out.vEgoCluster, self.CS.cluster_speed_hyst_gap)
+    if abs(ret.vEgo) < self.CS.cluster_min_speed:
+      ret.vEgoCluster = 0.0
+
+    if ret.cruiseState.speedCluster == 0:
+      ret.cruiseState.speedCluster = ret.cruiseState.speed
+
+    ret.buttonEnable = self.CS.update_button_enable(ret.buttonEvents)
+
+    # save for next iteration
+    self.CS.out = ret
+
+    for be in ret.buttonEvents:
+      if be.type == ButtonType.gapAdjustCruise:
+        self.physical_distance_button = be.pressed
+
+    prev_distance_button = self.onroad_distance_button
+    self.onroad_distance_button = self.params_memory.get_bool("OnroadDistanceButtonPressed")
+    if self.onroad_distance_button != prev_distance_button:
+      onroad_distance_events = create_button_events(self.onroad_distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
+      ret.buttonEvents = [*(be.to_dict() for be in ret.buttonEvents), *(be.to_dict() for be in onroad_distance_events)]
+
+    # Preserve brand-specific injections (e.g. GM cancel->distance remap hold) while
+    # still honoring the onroad virtual distance button and native distance button.
+    fp_ret.distancePressed = bool(fp_ret.distancePressed) or self.onroad_distance_button or self.physical_distance_button or bool(self.CS.distance_button)
+    fp_ret.ecoGear |= ret.gearShifter == GearShifter.eco
+    fp_ret.sportGear |= ret.gearShifter == GearShifter.sport
+
+    return ret, fp_ret
+
+
+class CarStateBase(ABC):
+  def __init__(self, CP: structs.CarParams, FPCP: custom.StarPilotCarParams):
+    self.CP = CP
+    self.car_fingerprint = CP.carFingerprint
+    self.out = structs.CarState()
+
+    self.cruise_buttons = 0
+    self.left_blinker_cnt = 0
+    self.right_blinker_cnt = 0
+    self.steering_pressed_cnt = 0
+    self.left_blinker_prev = False
+    self.right_blinker_prev = False
+    self.low_speed_alert = False
+    self.cluster_speed_hyst_gap = 0.0
+    self.cluster_min_speed = 0.0  # min speed before dropping to 0
+    self.secoc_key: bytes = b"00" * 16
+
+    Q = [[0.0, 0.0], [0.0, 100.0]]
+    R = 0.3
+    A = [[1.0, DT_CTRL], [0.0, 1.0]]
+    C = [[1.0, 0.0]]
+    x0=[[0.0], [0.0]]
+    K = get_kalman_gain(DT_CTRL, np.array(A), np.array(C), np.array(Q), R)
+    self.v_ego_kf = KF1D(x0=x0, A=A, C=C[0], K=K)
+
+    self.FPCP = FPCP
+
+    self.CC: structs.CarControl = structs.CarControl.new_message()
+
+    self.distance_button = False
+
+  @abstractmethod
+  def update(self, can_parsers, starpilot_toggles) -> structs.CarState:
+    pass
+
+  def parse_wheel_speeds(self, cs, fl, fr, rl, rr, unit=CV.KPH_TO_MS):
+    cs.vEgoRaw = sum((fl, fr, rl, rr)) / 4 * unit * self.CP.wheelSpeedFactor
+    cs.vEgo, cs.aEgo = self.update_speed_kf(cs.vEgoRaw)
+
+  def update_speed_kf(self, v_ego_raw):
+    if abs(v_ego_raw - self.v_ego_kf.x[0][0]) > 2.0:  # Prevent large accelerations when car starts at non zero speed
+      self.v_ego_kf.set_x([[v_ego_raw], [0.0]])
+
+    v_ego_x = self.v_ego_kf.update(v_ego_raw)
+    return float(v_ego_x[0]), float(v_ego_x[1])
+
+  def update_blinker_from_lamp(self, blinker_time: int, left_blinker_lamp: bool, right_blinker_lamp: bool):
+    """Update blinkers from lights. Enable output when light was seen within the last `blinker_time`
+    iterations"""
+    # TODO: Handle case when switching direction. Now both blinkers can be on at the same time
+    self.left_blinker_cnt = blinker_time if left_blinker_lamp else max(self.left_blinker_cnt - 1, 0)
+    self.right_blinker_cnt = blinker_time if right_blinker_lamp else max(self.right_blinker_cnt - 1, 0)
+    return self.left_blinker_cnt > 0, self.right_blinker_cnt > 0
+
+  def update_steering_pressed(self, steering_pressed, steering_pressed_min_count):
+    """Applies filtering on steering pressed for noisy driver torque signals."""
+    self.steering_pressed_cnt += 1 if steering_pressed else -1
+    self.steering_pressed_cnt = int(np.clip(self.steering_pressed_cnt, 0, steering_pressed_min_count * 2 + 1))
+    return self.steering_pressed_cnt > steering_pressed_min_count
+
+  def update_blinker_from_stalk(self, blinker_time: int, left_blinker_stalk: bool, right_blinker_stalk: bool):
+    """Update blinkers from stalk position. When stalk is seen the blinker will be on for at least blinker_time,
+    or until the stalk is turned off, whichever is longer. If the opposite stalk direction is seen the blinker
+    is forced to the other side. On a rising edge of the stalk the timeout is reset."""
+
+    if left_blinker_stalk:
+      self.right_blinker_cnt = 0
+      if not self.left_blinker_prev:
+        self.left_blinker_cnt = blinker_time
+
+    if right_blinker_stalk:
+      self.left_blinker_cnt = 0
+      if not self.right_blinker_prev:
+        self.right_blinker_cnt = blinker_time
+
+    self.left_blinker_cnt = max(self.left_blinker_cnt - 1, 0)
+    self.right_blinker_cnt = max(self.right_blinker_cnt - 1, 0)
+
+    self.left_blinker_prev = left_blinker_stalk
+    self.right_blinker_prev = right_blinker_stalk
+
+    return bool(left_blinker_stalk or self.left_blinker_cnt > 0), bool(right_blinker_stalk or self.right_blinker_cnt > 0)
+
+  def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
+    if not self.CP.pcmCruise:
+      for b in buttonEvents:
+        # Enable OP long on falling edge of enable buttons
+        if b.type in (ButtonType.accelCruise, ButtonType.decelCruise) and not b.pressed:
+          return True
+    return False
+
+  @staticmethod
+  def parse_gear_shifter(gear: str | None) -> structs.CarState.GearShifter:
+    if gear is None:
+      return GearShifter.unknown
+    return GEAR_SHIFTER_MAP.get(gear.upper(), GearShifter.unknown)
+
+  @staticmethod
+  def get_can_parsers(CP) -> dict[StrEnum, CANParser]:
+    return {}
+
+
+class CarControllerBase(ABC):
+  def __init__(self, dbc_names: dict[StrEnum, str], CP: structs.CarParams):
+    self.CP = CP
+    self.FPCP: custom.StarPilotCarParams | None = None
+    self.frame = 0
+    self.secoc_key: bytes = b"00" * 16
+
+  @abstractmethod
+  def update(self, CC: structs.CarControl, CS: CarStateBase, now_nanos: int) -> tuple[structs.CarControl.Actuators, list[CanData]]:
+    pass
+
+
+INTERFACE_ATTR_FILE = {
+  "FINGERPRINTS": "fingerprints",
+  "FW_VERSIONS": "fingerprints",
+}
+
+# interface-specific helpers
+
+
+def get_interface_attr(attr: str, combine_brands: bool = False, ignore_none: bool = False) -> dict[str | StrEnum, Any]:
+  # read all the folders in opendbc/car and return a dict where:
+  # - keys are all the car models or brand names
+  # - values are attr values from all car folders
+  result = {}
+  for car_folder in sorted([x[0] for x in os.walk(BASEDIR)]):
+    try:
+      brand_name = car_folder.split('/')[-1]
+      brand_values = __import__(f'opendbc.car.{brand_name}.{INTERFACE_ATTR_FILE.get(attr, "values")}', fromlist=[attr])
+      if hasattr(brand_values, attr) or not ignore_none:
+        attr_data = getattr(brand_values, attr, None)
+      else:
+        continue
+
+      if combine_brands:
+        if isinstance(attr_data, dict):
+          for f, v in attr_data.items():
+            result[f] = v
+      else:
+        result[brand_name] = attr_data
+    except (ImportError, OSError):
+      pass
+
+  return result

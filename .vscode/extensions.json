@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-vscode.cpptools",
+    "elagil.pre-commit-helper",
+    "charliermarsh.ruff",
+    "openai.chatgpt",
+  ]
+}
