@@ -2,10 +2,11 @@ import random
 import re
 
 from cereal import car
-from openpilot.selfdrive.car.volkswagen.values import CAR, FW_QUERY_CONFIG, WMI
+from openpilot.selfdrive.car.volkswagen.values import CAR, FW_QUERY_CONFIG, WMI, CarControllerParams
 from openpilot.selfdrive.car.volkswagen.fingerprints import FW_VERSIONS
 
 Ecu = car.CarParams.Ecu
+ButtonType = car.CarState.ButtonEvent.Type
 
 CHASSIS_CODE_PATTERN = re.compile('[A-Z0-9]{2}')
 # TODO: determine the unknown groups
@@ -13,6 +14,14 @@ SPARE_PART_FW_PATTERN = re.compile(b'\xf1\x87(?P<gateway>[0-9][0-9A-Z]{2})(?P<un
 
 
 class TestVolkswagenPlatformConfigs:
+  def test_mqb_main_cruise_button_event(self):
+    CP = car.CarParams(carFingerprint=CAR.VOLKSWAGEN_TIGUAN_MK2, transmissionType=car.CarParams.TransmissionType.automatic)
+    buttons = CarControllerParams(CP).BUTTONS
+
+    assert any(button.event_type == ButtonType.altButton1 and
+               button.can_addr == "GRA_ACC_01" and
+               button.can_msg == "GRA_Hauptschalter" for button in buttons)
+
   def test_spare_part_fw_pattern(self, subtests):
     # Relied on for determining if a FW is likely VW
     for platform, ecus in FW_VERSIONS.items():

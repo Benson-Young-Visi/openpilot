@@ -108,6 +108,10 @@ class CarInterface(CarInterfaceBase):
                                        pcm_enable=not self.CS.CP.openpilotLongitudinalControl,
                                        enable_buttons=(ButtonType.setCruise, ButtonType.resumeCruise))
 
+    # Main cruise switches can be momentary or latching; either edge means the driver requested a mode change.
+    if c.enabled and any(button.type == ButtonType.altButton1 for button in ret.buttonEvents):
+      events.add(EventName.buttonCancel)
+
     # Low speed steer alert hysteresis logic
     if (self.CP.minSteerSpeed - 1e-3) > CarControllerParams.DEFAULT_MIN_STEER_SPEED and ret.vEgo < (self.CP.minSteerSpeed + 1.):
       self.low_speed_alert = True

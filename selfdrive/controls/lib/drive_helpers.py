@@ -34,10 +34,20 @@ CRUISE_LONG_PRESS = 50
 CRUISE_NEAREST_FUNC = {
   ButtonType.accelCruise: math.ceil,
   ButtonType.decelCruise: math.floor,
+  ButtonType.resumeCruise: math.ceil,
+  ButtonType.setCruise: math.floor,
 }
 CRUISE_INTERVAL_SIGN = {
   ButtonType.accelCruise: +1,
   ButtonType.decelCruise: -1,
+  ButtonType.resumeCruise: +1,
+  ButtonType.setCruise: -1,
+}
+VW_CRUISE_INTERVAL = {
+  ButtonType.accelCruise: 10,
+  ButtonType.decelCruise: 10,
+  ButtonType.resumeCruise: 1,
+  ButtonType.setCruise: 1,
 }
 
 
@@ -47,7 +57,11 @@ class VCruiseHelper:
     self.v_cruise_kph = V_CRUISE_UNSET
     self.v_cruise_cluster_kph = V_CRUISE_UNSET
     self.v_cruise_kph_last = 0
-    self.button_timers = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0}
+    self.vw_cruise_button_mapping = CP.carName == "volkswagen" and CP.openpilotLongitudinalControl and not CP.pcmCruise
+    cruise_buttons = (ButtonType.decelCruise, ButtonType.accelCruise)
+    if self.vw_cruise_button_mapping:
+      cruise_buttons += (ButtonType.setCruise, ButtonType.resumeCruise)
+    self.button_timers = {button: 0 for button in cruise_buttons}
     self.button_change_states = {btn: {"standstill": False, "enabled": False} for btn in self.button_timers}
 
   @property
@@ -106,14 +120,17 @@ class VCruiseHelper:
 
     # Don't adjust speed when pressing resume to exit standstill
     cruise_standstill = self.button_change_states[button_type]["standstill"] or CS.cruiseState.standstill
-    if button_type == ButtonType.accelCruise and cruise_standstill:
+    if button_type in (ButtonType.accelCruise, ButtonType.resumeCruise) and cruise_standstill:
       return
 
     # Don't adjust speed if we've enabled since the button was depressed (some ports enable on rising edge)
     if not self.button_change_states[button_type]["enabled"]:
       return
 
-    v_cruise_delta_interval = frogpilot_toggles.cruise_increase_long if long_press else frogpilot_toggles.cruise_increase
+    if self.vw_cruise_button_mapping:
+      v_cruise_delta_interval = VW_CRUISE_INTERVAL[button_type]
+    else:
+      v_cruise_delta_interval = frogpilot_toggles.cruise_increase_long if long_press else frogpilot_toggles.cruise_increase
     v_cruise_delta = v_cruise_delta * v_cruise_delta_interval
     if v_cruise_delta_interval % 5 == 0 and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta
