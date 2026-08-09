@@ -14,6 +14,7 @@ This branch is based on StarPilot's FrogPilot-derived staging code and is intend
 - Lateral actuation is coupled to the vehicle cruise state. Always On Lateral is forced off by this branch.
 - **Driving Confidence Ball** and **Steering Torque Limit Bar** are independent on/off options under **StarPilot Settings → Visuals → Driving Screen Widgets**. Both default on.
 - The onroad driving-personality control shows the live Traffic, Aggressive, Standard, or Relaxed profile as a labeled badge.
+- Standstill departures recover a centered, high-confidence moving lead even if StarPilot's normal lead-tracking debounce did not latch before the stop. The lead must be moving and accelerating, the driving model must also indicate go, and the signal must persist for 0.15 seconds. Brake input, forced/red-light stops, stopped leads, weak leads, and off-center leads retain their safety vetoes.
 - With openpilot longitudinal control engaged, the Tiguan's factory cruise buttons adjust the comma set speed as follows:
   - **+ / −:** 10 display-unit steps.
   - **RES / SET:** +1 / −1 display-unit steps.
@@ -21,6 +22,8 @@ This branch is based on StarPilot's FrogPilot-derived staging code and is intend
 - While disengaged but the factory cruise master remains available, **+ / −** preselect a new stored comma speed. **SET** and **RES** retain their factory engage/resume behavior, and RES uses the preselected speed instead of braking toward a stale setpoint.
 
 The torque bar visualizes normalized steering utilization. It does not raise or otherwise modify the vehicle or panda safety torque limits.
+
+For no-lead traffic-light stops, use **Conditional Experimental Mode** with **Stop Lights/Signs** enabled. openpilot does not expose an explicit traffic-light-color detector; it infers red-to-green behavior from the driving model. A gas-pedal tap remains the immediate driver override when the model has not yet changed from stop to go.
 
 ## Before driving
 

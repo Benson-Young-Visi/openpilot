@@ -2197,7 +2197,8 @@ def test_standstill_confident_departing_lead_clears_stop_without_waiting_for_mod
   sm["modelV2"].action.shouldStop = True
   sm["starpilotPlan"].vCruise = 10.0
 
-  for _ in range(6):
+  confirm_frames = int(round(longitudinal_planner_module.LEAD_DEPART_CONFIDENT_CONFIRM_TIME / planner.dt))
+  for _ in range(max(confirm_frames - 1, 0)):
     planner.update(sm, make_toggles(model_version))
     assert planner.output_should_stop
 
@@ -2225,7 +2226,8 @@ def test_standstill_confident_departing_lead_gets_depart_floor_with_zero_model_a
   sm["modelV2"].action.shouldStop = False
   sm["starpilotPlan"].vCruise = 10.0
 
-  for _ in range(6):
+  confirm_frames = int(round(longitudinal_planner_module.LEAD_DEPART_CONFIDENT_CONFIRM_TIME / planner.dt))
+  for _ in range(max(confirm_frames - 1, 0)):
     planner.update(sm, make_toggles(model_version))
     assert planner.output_should_stop
 
@@ -2233,6 +2235,73 @@ def test_standstill_confident_departing_lead_gets_depart_floor_with_zero_model_a
 
   assert not planner.output_should_stop
   assert planner.output_a_target >= 0.25
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_untracked_standstill_vision_depart_releases_after_short_confirm(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  sm = make_sm(
+    0.0,
+    desired_accel=0.0,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(status=True, d_rel=12.6, v_lead=2.8, a_lead=0.9, radar=False, model_prob=0.99),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = False
+  sm["starpilotPlan"].vCruise = 10.0
+
+  confirm_frames = int(round(longitudinal_planner_module.LEAD_DEPART_CONFIDENT_CONFIRM_TIME / planner.dt))
+  for _ in range(max(confirm_frames - 1, 0)):
+    planner.update(sm, make_toggles(model_version))
+    assert planner.output_should_stop
+
+  planner.update(sm, make_toggles(model_version))
+
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= longitudinal_planner_module.STANDSTILL_LEAD_DEPART_MIN_ACCEL
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+@pytest.mark.parametrize("model_should_stop,brake_pressed,y_rel,model_prob", [
+  (True, False, 0.0, 0.99),
+  (False, True, 0.0, 0.99),
+  (False, False, 1.2, 0.99),
+  (False, False, 0.0, 0.90),
+])
+def test_untracked_standstill_vision_depart_keeps_safety_vetoes(
+  model_version, model_should_stop, brake_pressed, y_rel, model_prob,
+):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  sm = make_sm(
+    0.0,
+    desired_accel=0.4,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(
+      status=True, d_rel=12.6, v_lead=2.8, a_lead=0.9,
+      radar=False, model_prob=model_prob, y_rel=y_rel,
+    ),
+  )
+  sm["carState"].standstill = True
+  sm["carState"].brakePressed = brake_pressed
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = model_should_stop
+  sm["starpilotPlan"].vCruise = 10.0
+
+  confirm_frames = int(round(longitudinal_planner_module.LEAD_DEPART_CONFIDENT_CONFIRM_TIME / planner.dt)) + 2
+  for _ in range(confirm_frames):
+    planner.update(sm, make_toggles(model_version))
+
+  assert planner.confident_lead_depart_elapsed == 0.0
+  assert planner.lead_depart_accel_hold_floor is None
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
@@ -2334,7 +2403,8 @@ def test_standstill_depart_accel_hold_reuses_floor_through_softening_lead_delta(
   sm_release["starpilotPlan"].vCruise = 10.0
   sm_release["modelV2"].action.shouldStop = False
 
-  for _ in range(6):
+  confirm_frames = int(round(longitudinal_planner_module.LEAD_DEPART_CONFIDENT_CONFIRM_TIME / planner.dt))
+  for _ in range(max(confirm_frames - 1, 0)):
     planner.update(sm_release, toggles)
     assert planner.output_should_stop
 
