@@ -27,6 +27,11 @@ class StarPilotCard:
 
   def __init__(self, CP, FPCP):
     self.CP = CP
+    self.vw_cruise_button_mapping = (
+      self.CP.brand == "volkswagen" and
+      getattr(self.CP, "openpilotLongitudinalControl", False) and
+      not getattr(self.CP, "pcmCruise", True)
+    )
 
     self.params = Params(return_defaults=True)
     self.params_memory = Params(memory=True)
@@ -193,8 +198,9 @@ class StarPilotCard:
     if sm.updated["starpilotPlan"] or any(be_type in (ButtonType.accelCruise, ButtonType.resumeCruise) for be_type in button_event_types):
       self.accel_pressed = any(be_type in (ButtonType.accelCruise, ButtonType.resumeCruise) for be_type in button_event_types)
 
-    if sm.updated["starpilotPlan"] or any(be_type == ButtonType.decelCruise for be_type in button_event_types):
-      self.decel_pressed = any(be_type == ButtonType.decelCruise for be_type in button_event_types)
+    decel_button_types = (ButtonType.decelCruise, ButtonType.setCruise) if self.vw_cruise_button_mapping else (ButtonType.decelCruise,)
+    if sm.updated["starpilotPlan"] or any(be_type in decel_button_types for be_type in button_event_types):
+      self.decel_pressed = any(be_type in decel_button_types for be_type in button_event_types)
 
     self._distance_poll_counter += 1
     if self._distance_poll_counter >= 10:

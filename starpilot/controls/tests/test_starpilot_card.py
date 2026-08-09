@@ -106,6 +106,36 @@ def make_wrapped_button_event(button_type, pressed):
   return SimpleNamespace(type=SimpleNamespace(raw=int(button_type)), pressed=pressed)
 
 
+@pytest.mark.parametrize("button_type", (spc.ButtonType.decelCruise, spc.ButtonType.setCruise))
+def test_volkswagen_down_buttons_decline_pending_speed_limit(monkeypatch, tmp_path, button_type):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+
+  card = spc.StarPilotCard(
+    SimpleNamespace(brand="volkswagen", openpilotLongitudinalControl=True, pcmCruise=False),
+    SimpleNamespace(alternativeExperience=0),
+  )
+  car_state = make_car_state(available=True, enabled=True, button_events=[make_wrapped_button_event(button_type, True)])
+
+  ret = card.update(car_state, SimpleNamespace(distancePressed=False), make_sm(), make_toggles(speed_limit_controller=True))
+
+  assert ret.decelPressed is True
+
+
+def test_set_button_does_not_decline_speed_limit_on_other_brands(monkeypatch, tmp_path):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+
+  card = spc.StarPilotCard(SimpleNamespace(brand="honda"), SimpleNamespace(alternativeExperience=0))
+  car_state = make_car_state(available=True, enabled=True, button_events=[make_wrapped_button_event(spc.ButtonType.setCruise, True)])
+
+  ret = card.update(car_state, SimpleNamespace(distancePressed=False), make_sm(), make_toggles(speed_limit_controller=True))
+
+  assert ret.decelPressed is False
+
+
 def test_honda_lkas_button_can_toggle_always_on_lateral(monkeypatch, tmp_path):
   monkeypatch.setattr(spc, "Params", FakeParams)
   monkeypatch.setattr(spc, "is_FrogsGoMoo", lambda: False)
