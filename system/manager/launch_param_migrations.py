@@ -12,6 +12,11 @@ STEER_KP_KEY = "SteerKP"
 STEER_KP_STOCK_KEY = "SteerKPStock"
 USE_OLD_UI_KEY = "UseOldUI"
 VISION_SPEED_LIMIT_DETECTION_KEY = "VisionSpeedLimitDetection"
+SLC_PRIMARY_PRIORITY_KEY = "SLCPriority1"
+SLC_SECONDARY_PRIORITY_KEY = "SLCPriority2"
+SLC_PRIMARY_PRIORITIES = {"Dashboard", "Map Data", "Vision", "Highest", "Lowest"}
+SLC_SECONDARY_PRIORITIES = {"None", "Dashboard", "Map Data", "Vision"}
+SLC_AGGREGATE_PRIORITIES = {"Highest", "Lowest"}
 DEVELOPER_METRIC_DISPLAY_KEYS = (
   "FPSCounter",
   "ShowCPU",
@@ -83,12 +88,14 @@ ACCELERATION_PROFILE_MIGRATION = {
 
 class ParamsLike(Protocol):
   def get_param_path(self, key: str = "") -> str: ...
+  def get(self, key: str): ...
   def get_bool(self, key: str) -> bool: ...
   def get_int(self, key: str) -> int: ...
   def get_float(self, key: str) -> float: ...
   def put_bool(self, key: str, value: bool) -> None: ...
   def put_int(self, key: str, value: int) -> None: ...
   def put_float(self, key: str, value: float) -> None: ...
+  def put(self, key: str, value) -> None: ...
 
 
 def _approx_equal(lhs: float, rhs: float, tolerance: float = 1e-6) -> bool:
@@ -290,6 +297,33 @@ def _apply_speed_limit_visibility_migration(params: ParamsLike, marker: Path) ->
   marker.touch()
 
 
+def _normalize_speed_limit_priorities(params: ParamsLike) -> None:
+  """Keep legacy/invalid source names from silently disabling SLC inputs."""
+  primary = params.get(SLC_PRIMARY_PRIORITY_KEY)
+  secondary = params.get(SLC_SECONDARY_PRIORITY_KEY)
+  if isinstance(primary, bytes):
+    primary = primary.decode("utf-8", errors="ignore")
+  if isinstance(secondary, bytes):
+    secondary = secondary.decode("utf-8", errors="ignore")
+  original_primary = primary
+  original_secondary = secondary
+
+  # Older FrogPilot installs used "Navigation" as a source. StarPilot splits
+  # this into camera Vision and offline Map Data, with Vision as the default.
+  if primary not in SLC_PRIMARY_PRIORITIES:
+    primary = "Vision"
+
+  if primary in SLC_AGGREGATE_PRIORITIES:
+    secondary = "None"
+  elif secondary not in SLC_SECONDARY_PRIORITIES or secondary == primary:
+    secondary = "Map Data" if primary != "Map Data" else "Vision"
+
+  if primary != original_primary:
+    params.put(SLC_PRIMARY_PRIORITY_KEY, primary)
+  if secondary != original_secondary:
+    params.put(SLC_SECONDARY_PRIORITY_KEY, secondary)
+
+
 def apply_launch_param_migrations(params: ParamsLike, marker_path: Path | None = None,
                                   branch_defaults_marker_path: Path | None = None,
                                   acceleration_profile_marker_path: Path | None = None,
@@ -322,6 +356,9 @@ def apply_launch_param_migrations(params: ParamsLike, marker_path: Path | None =
   _apply_speed_limit_visibility_migration(
     params, speed_limit_visibility_marker_path or _speed_limit_visibility_marker_path(params)
   )
+  # This is intentionally idempotent instead of marker-gated: a value imported
+  # from an older fork can appear after an update or settings restore.
+  _normalize_speed_limit_priorities(params)
 
 
 def main() -> int:

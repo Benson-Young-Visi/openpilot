@@ -319,6 +319,39 @@ def test_apply_launch_param_migrations_does_not_reenable_vision_speed_limit_dete
   assert not params.get_bool("VisionSpeedLimitDetection")
 
 
+def test_apply_launch_param_migrations_replaces_legacy_navigation_slc_priority(tmp_path):
+  params = FileBackedFakeParams(tmp_path / "params")
+  params.put("SLCPriority1", "Navigation")
+  params.put("SLCPriority2", "Map Data")
+
+  apply_launch_param_migrations(params)
+
+  assert params.get("SLCPriority1") == "Vision"
+  assert params.get("SLCPriority2") == "Map Data"
+
+
+def test_apply_launch_param_migrations_preserves_valid_slc_priorities(tmp_path):
+  params = FileBackedFakeParams(tmp_path / "params")
+  params.put("SLCPriority1", "Dashboard")
+  params.put("SLCPriority2", "Vision")
+
+  apply_launch_param_migrations(params)
+
+  assert params.get("SLCPriority1") == "Dashboard"
+  assert params.get("SLCPriority2") == "Vision"
+
+
+def test_apply_launch_param_migrations_clears_secondary_for_aggregate_slc_priority(tmp_path):
+  params = FileBackedFakeParams(tmp_path / "params")
+  params.put("SLCPriority1", "Lowest")
+  params.put("SLCPriority2", "Map Data")
+
+  apply_launch_param_migrations(params)
+
+  assert params.get("SLCPriority1") == "Lowest"
+  assert params.get("SLCPriority2") == "None"
+
+
 def test_apply_launch_param_migrations_disables_developer_metric_display_once(tmp_path):
   params = FileBackedFakeParams(tmp_path / "params")
   for key in DEVELOPER_METRIC_DISPLAY_KEYS:

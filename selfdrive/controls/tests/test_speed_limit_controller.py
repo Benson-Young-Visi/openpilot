@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.controls.lib.speed_limit_controller import SpeedLimitController
@@ -131,6 +132,60 @@ def test_normal_vision_delta_keeps_fast_path():
     assert controller.source == "Vision"
   finally:
     controller.shutdown()
+
+
+def test_vision_primary_falls_back_to_map_data():
+  controller = make_controller(
+    speed_limit_priority1="Vision",
+    speed_limit_priority2="Map Data",
+    vision_speed_limit_detection=True,
+  )
+  try:
+    controller.starpilot_planner.params_memory.put_float("VisionSpeedLimit", mph(55))
+    sm = make_sm(gas_pressed=False, v_cruise_kph=70 * CV.MPH_TO_KPH)
+    sm["mapdOut"].waySelectionType = custom.WaySelectionType.current
+    sm["mapdOut"].speedLimit = mph(45)
+
+    controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(70), mph(50), sm)
+    assert controller.target == pytest.approx(mph(55))
+    assert controller.source == "Vision"
+
+    controller.starpilot_planner.params_memory.remove("VisionSpeedLimit")
+    controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(70), mph(50), sm)
+    assert controller.target == pytest.approx(mph(45))
+    assert controller.source == "Map Data"
+  finally:
+    controller.shutdown()
+
+
+def test_map_lookahead_slows_before_lower_limit_but_waits_for_higher_limit():
+  lower_controller = make_controller(
+    speed_limit_priority1="Map Data",
+    map_speed_lookahead_lower=6.0,
+    map_speed_lookahead_higher=0.0,
+  )
+  higher_controller = make_controller(
+    speed_limit_priority1="Map Data",
+    map_speed_lookahead_lower=6.0,
+    map_speed_lookahead_higher=0.0,
+  )
+  try:
+    sm = make_sm(gas_pressed=False, v_cruise_kph=70 * CV.MPH_TO_KPH)
+    sm["mapdOut"].waySelectionType = custom.WaySelectionType.current
+    sm["mapdOut"].speedLimit = mph(70)
+    sm["mapdOut"].nextSpeedLimit = mph(60)
+    sm["mapdOut"].nextSpeedLimitDistance = mph(50) * 5.0
+    lower_controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(70), mph(50), sm)
+    assert lower_controller.target == pytest.approx(mph(60))
+
+    sm["mapdOut"].speedLimit = mph(60)
+    sm["mapdOut"].nextSpeedLimit = mph(70)
+    sm["mapdOut"].nextSpeedLimitDistance = 1.0
+    higher_controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(70), mph(50), sm)
+    assert higher_controller.target == pytest.approx(mph(60))
+  finally:
+    lower_controller.shutdown()
+    higher_controller.shutdown()
 
 
 def test_inactive_valid_cruise_still_applies_large_delta_guard():
