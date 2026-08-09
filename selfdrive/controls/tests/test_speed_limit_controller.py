@@ -134,6 +134,52 @@ def test_normal_vision_delta_keeps_fast_path():
     controller.shutdown()
 
 
+def test_first_vision_limit_below_set_speed_requires_lower_confirmation():
+  controller = make_controller(
+    speed_limit_priority1="Vision",
+    speed_limit_confirmation_lower=True,
+    vision_speed_limit_detection=True,
+  )
+  try:
+    controller.starpilot_planner.params_memory.put_float("VisionSpeedLimit", mph(40))
+    controller.starpilot_planner.params_memory.put_int("VisionSpeedLimitSupportCount", 3)
+    controller.starpilot_planner.params_memory.put_float("VisionSpeedLimitSupportSpeed", mph(40))
+    sm = make_sm(gas_pressed=False, v_cruise_kph=70 * CV.MPH_TO_KPH)
+
+    controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(70), mph(65), sm)
+
+    assert controller.target == 0
+    assert controller.source == "None"
+    assert controller.unconfirmed_speed_limit == pytest.approx(mph(40))
+
+    sm["starpilotCarState"].accelPressed = True
+    controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(70), mph(65), sm)
+
+    assert controller.target == pytest.approx(mph(40))
+    assert controller.source == "Vision"
+  finally:
+    controller.shutdown()
+
+
+def test_first_higher_vision_limit_applies_without_confirmation():
+  controller = make_controller(
+    speed_limit_priority1="Vision",
+    speed_limit_confirmation_lower=True,
+    vision_speed_limit_detection=True,
+  )
+  try:
+    controller.starpilot_planner.params_memory.put_float("VisionSpeedLimit", mph(70))
+    sm = make_sm(gas_pressed=False, v_cruise_kph=60 * CV.MPH_TO_KPH)
+
+    controller.update_limits(0.0, datetime.now(timezone.utc), False, mph(60), mph(55), sm)
+
+    assert controller.target == pytest.approx(mph(70))
+    assert controller.source == "Vision"
+    assert controller.unconfirmed_speed_limit == 0
+  finally:
+    controller.shutdown()
+
+
 def test_vision_primary_falls_back_to_map_data():
   controller = make_controller(
     speed_limit_priority1="Vision",

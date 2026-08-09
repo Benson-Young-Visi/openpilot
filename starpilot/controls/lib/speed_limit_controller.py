@@ -279,9 +279,17 @@ class SpeedLimitController:
     self.mapbox_future = future
     future.add_done_callback(complete_request)
 
-  def handle_limit_change(self, desired_source, desired_target, current_road_name, v_ego, sm):
+  def handle_limit_change(self, desired_source, desired_target, current_road_name, v_cruise, v_ego, sm):
     self.speed_limit_changed_timer += DT_MDL
     had_override = self.override_active(v_ego, sm["carState"].gasPressed)
+
+    # If SLC has not established a target yet, compare a newly detected sign to
+    # the driver's current cruise/road speed. Otherwise a side-road 40/60 sign
+    # first seen on a 100 km/h highway looks like an increase from zero and can
+    # bypass lower-limit confirmation.
+    current_limit_reference = self.target if self.target > 0 else max(v_cruise, v_ego)
+    lower_limit_change = desired_target > 0 and desired_target < current_limit_reference - 0.1
+    higher_limit_change = desired_target > current_limit_reference + 0.1
 
     long_active = sm["carControl"].longActive
     speed_limit_accepted = sm["starpilotCarState"].accelPressed and long_active
@@ -306,18 +314,22 @@ class SpeedLimitController:
       self.previous_target = desired_target
       self.previous_road_name = current_road_name
 
-    elif desired_target < self.target and (desired_source == "None" or not self.starpilot_toggles.speed_limit_confirmation_lower):
+    elif desired_source == "None":
+      self.source = desired_source
+      self.target = desired_target
+
+    elif lower_limit_change and not self.starpilot_toggles.speed_limit_confirmation_lower:
       self.source = desired_source
       self.target = desired_target
       self.clear_override_for_source_limit(desired_source, desired_target, had_override)
 
-    elif desired_target > self.target and (desired_source == "None" or not self.starpilot_toggles.speed_limit_confirmation_higher):
+    elif higher_limit_change and not self.starpilot_toggles.speed_limit_confirmation_higher:
       self.source = desired_source
       self.target = desired_target
       if 0 < self.overridden_speed <= self.target + self.get_offset(self.target):
         self.clear_override_for_source_limit(desired_source, desired_target, had_override)
 
-    elif desired_target == self.target:
+    elif not lower_limit_change and not higher_limit_change:
       self.source = desired_source
       self.target = desired_target
 
@@ -429,7 +441,7 @@ class SpeedLimitController:
     current_road_name = sm["mapdOut"].roadName if desired_source == "Map Data" else ""
 
     if abs(desired_target - self.previous_target) >= 1 or (current_road_name != self.previous_road_name and current_road_name != ""):
-      self.handle_limit_change(desired_source, desired_target, current_road_name, v_ego, sm)
+      self.handle_limit_change(desired_source, desired_target, current_road_name, v_cruise, v_ego, sm)
     elif desired_source != self.source and (abs(desired_target - self.target) < 1 or self.target == 0):
       self.source = desired_source
       self.target = desired_target
