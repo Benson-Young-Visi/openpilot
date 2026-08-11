@@ -11,6 +11,7 @@ from openpilot.system.manager.launch_param_migrations import (
   LAUNCH_PARAM_MIGRATION_MARKER,
   LATERAL_METHOD_REBRAND_MIGRATION_MARKER,
   MARKER_DIRNAME,
+  MODEL_STOP_SAFETY_MIGRATION_MARKER,
   STANDARD_ACCELERATION_PROFILE,
   SPEED_LIMIT_VISIBILITY_MIGRATION_MARKER,
   USE_OLD_UI_MIGRATION_MARKER,
@@ -161,7 +162,9 @@ def test_apply_launch_param_migrations_applies_branch_defaults_for_existing_inst
 
   assert not params.get_bool("LongPitch")
   assert not params.get_bool("CEStoppedLead")
-  assert params.get_bool("ForceStops")
+  assert not params.get_bool("ForceStops")
+  assert not params.get_bool("CEStopLights")
+  assert params.get_float("CEModelStopTime") == 0.0
   assert params.get_float("AggressiveFollowHigh") == 1.0
   assert params.get_float("StandardFollowHigh") == 1.2
   assert params.get_float("StandardJerkAcceleration") == 100.0
@@ -205,10 +208,42 @@ def test_apply_launch_param_migrations_preserves_custom_branch_defaults_without_
   apply_launch_param_migrations(params)
 
   assert not params.get_bool("CEStoppedLead")
-  assert params.get_bool("ForceStops")
+  assert not params.get_bool("ForceStops")
   assert params.get_float("AggressiveFollowHigh") == 2.0
   assert params.get_float("StandardJerkAcceleration") == 25.0
   assert params.get_float("RelaxedFollow") == 2.0
+
+
+def test_apply_launch_param_migrations_disables_model_inferred_stops_once(tmp_path):
+  params = FileBackedFakeParams(tmp_path / "params")
+  marker_path(tmp_path, LAUNCH_PARAM_MIGRATION_MARKER).touch()
+  marker_path(tmp_path, BRANCH_DEFAULTS_MIGRATION_MARKER).touch()
+
+  params.put_bool("ForceStops", True)
+  params.put_bool("CEStopLights", True)
+  params.put_float("CEModelStopTime", 8.0)
+
+  apply_launch_param_migrations(params)
+
+  assert not params.get_bool("ForceStops")
+  assert not params.get_bool("CEStopLights")
+  assert params.get_float("CEModelStopTime") == 0.0
+  assert marker_path(tmp_path, MODEL_STOP_SAFETY_MIGRATION_MARKER).is_file()
+
+
+def test_apply_launch_param_migrations_preserves_explicit_model_stop_choice_after_safety_marker(tmp_path):
+  params = FileBackedFakeParams(tmp_path / "params")
+  marker_path(tmp_path, MODEL_STOP_SAFETY_MIGRATION_MARKER).touch()
+
+  params.put_bool("ForceStops", True)
+  params.put_bool("CEStopLights", True)
+  params.put_float("CEModelStopTime", 5.0)
+
+  apply_launch_param_migrations(params)
+
+  assert params.get_bool("ForceStops")
+  assert params.get_bool("CEStopLights")
+  assert params.get_float("CEModelStopTime") == 5.0
 
 
 def test_apply_launch_param_migrations_updates_acceleration_profile_for_existing_installs(tmp_path):
