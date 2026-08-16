@@ -29,7 +29,6 @@ DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 FrogPilotAudibleAlert = custom.FrogPilotCarControl.HUDControl.AudibleAlert
-SILENT_ROUTINE_ALERTS = frozenset((AudibleAlert.engage, AudibleAlert.disengage))
 
 
 sound_list: dict[Any, tuple[str, int | None, float]] = {
@@ -63,9 +62,9 @@ sound_list: dict[Any, tuple[str, int | None, float]] = {
 }
 
 
-def suppress_routine_chime(alert):
-  """Mute routine state-change chimes while preserving every safety alert."""
-  return AudibleAlert.none if alert in SILENT_ROUTINE_ALERTS else alert
+def suppress_audible_alert(_alert):
+  """Keep this custom Tiguan branch completely silent."""
+  return AudibleAlert.none
 
 
 def check_controls_timeout_alert(sm):
@@ -156,6 +155,7 @@ class Soundd:
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
+    new_alert = suppress_audible_alert(new_alert)
     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       self.current_alert = new_alert
@@ -180,7 +180,7 @@ class Soundd:
       if new_alert == AudibleAlert.none and new_frogpilot_alert != FrogPilotAudibleAlert.none:
         new_alert = new_frogpilot_alert
 
-      self.update_alert(suppress_routine_chime(new_alert))
+      self.update_alert(new_alert)
     elif check_controls_timeout_alert(sm):
       self.update_alert(AudibleAlert.warningImmediate)
       self.controls_timeout_alert = True

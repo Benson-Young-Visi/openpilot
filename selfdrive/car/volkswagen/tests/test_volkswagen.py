@@ -1,7 +1,10 @@
 import random
 import re
+from types import SimpleNamespace
 
 from cereal import car
+from openpilot.selfdrive.car import gen_empty_fingerprint
+from openpilot.selfdrive.car.volkswagen.interface import CarInterface
 from openpilot.selfdrive.car.volkswagen.values import CAR, FW_QUERY_CONFIG, WMI, CarControllerParams
 from openpilot.selfdrive.car.volkswagen.fingerprints import FW_VERSIONS
 
@@ -14,6 +17,17 @@ SPARE_PART_FW_PATTERN = re.compile(b'\xf1\x87(?P<gateway>[0-9][0-9A-Z]{2})(?P<un
 
 
 class TestVolkswagenPlatformConfigs:
+  def test_tiguan_uses_stock_acc(self):
+    fingerprint = gen_empty_fingerprint()
+    fingerprint[0][0xAD] = 8  # Getriebe_11: automatic transmission
+    fingerprint[1][0x40] = 8  # Airbag_01: gateway connection
+
+    CP = CarInterface.get_params(CAR.VOLKSWAGEN_TIGUAN_MK2, fingerprint, [], True, SimpleNamespace(), False)
+
+    assert not CP.experimentalLongitudinalAvailable
+    assert not CP.openpilotLongitudinalControl
+    assert CP.pcmCruise
+
   def test_mqb_main_cruise_button_event(self):
     CP = car.CarParams(carFingerprint=CAR.VOLKSWAGEN_TIGUAN_MK2, transmissionType=car.CarParams.TransmissionType.automatic)
     buttons = CarControllerParams(CP).BUTTONS

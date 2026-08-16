@@ -83,8 +83,11 @@ class CarInterface(CarInterfaceBase):
 
     # Global longitudinal tuning defaults, can be overridden per-vehicle
 
-    ret.experimentalLongitudinalAvailable = ret.networkLocation == NetworkLocation.gateway or docs
-    if experimental_long:
+    # This custom branch uses the Tiguan's factory radar ACC for longitudinal control. Keep this
+    # vehicle on stock ACC even if a stale or restored parameter requests experimental long.
+    tiguan_stock_acc = candidate == CAR.VOLKSWAGEN_TIGUAN_MK2
+    ret.experimentalLongitudinalAvailable = (ret.networkLocation == NetworkLocation.gateway or docs) and not tiguan_stock_acc
+    if experimental_long and not tiguan_stock_acc:
       # Proof-of-concept, prep for E2E only. No radar points available. Panda ALLOW_DEBUG firmware required.
       ret.openpilotLongitudinalControl = True
       ret.safetyConfigs[0].safetyParam |= Panda.FLAG_VOLKSWAGEN_LONG_CONTROL
