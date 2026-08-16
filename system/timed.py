@@ -5,7 +5,10 @@ import subprocess
 import time
 from typing import NoReturn
 
-from timezonefinder import TimezoneFinder
+try:
+  from timezonefinder import TimezoneFinder
+except ImportError:
+  TimezoneFinder = None
 
 import cereal.messaging as messaging
 from openpilot.common.time import system_time_valid
@@ -60,7 +63,9 @@ def main() -> NoReturn:
 
   # Restore timezone from param
   tz = params.get("Timezone", encoding='utf8')
-  tf = TimezoneFinder()
+  tf = TimezoneFinder() if TimezoneFinder is not None else None
+  if tf is None:
+    cloudlog.warning("timezonefinder unavailable; retaining the configured timezone")
   if tz is not None:
     cloudlog.debug("Restoring timezone from param")
     set_timezone(tz)
@@ -86,7 +91,7 @@ def main() -> NoReturn:
 
     # set timezone
     pos = llk.positionGeodetic.value
-    if len(pos) == 3:
+    if len(pos) == 3 and tf is not None:
       gps_timezone = tf.timezone_at(lat=pos[0], lng=pos[1])
       if gps_timezone is None:
         cloudlog.critical(f"No timezone found based on {pos=}")
