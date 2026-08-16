@@ -12,6 +12,7 @@ This branch is based on FrogPilot and is intended for a supported 2018 Volkswage
 - Factory cruise buttons, set-speed behavior, following-distance selection, stop-and-go, and lead following remain under the VW ACC system. FrogPilot driving personalities and model-based stop/speed controls are therefore hidden or inactive because they cannot control factory ACC.
 - The cruise main button still disengages openpilot steering while engaged.
 - Map and camera speed-limit information may still be displayed, but it cannot automatically change the factory ACC set speed.
+- The comma 3X runtime is pinned to AGNOS 12.8.28. This prevents the older FrogPilot base from attempting an incompatible AGNOS 10.1 downgrade.
 
 The torque bar is a visualization of normalized steering utilization. It does not raise or otherwise modify the vehicle or panda safety torque limits.
 
