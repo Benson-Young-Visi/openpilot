@@ -1,4 +1,5 @@
 import os
+import importlib
 import subprocess
 import sys
 import sysconfig
@@ -82,6 +83,23 @@ if platform.system() == "Darwin":
 elif arch == "aarch64" and AGNOS:
   arch = "larch64"
 assert arch in ["larch64", "aarch64", "x86_64", "Darwin"]
+
+# AGNOS 18 distributes native dependencies as Python packages instead of under
+# /usr/local. Prefer those include and library directories when available while
+# retaining the legacy paths for older development environments.
+runtime_dependency_names = [
+  "acados", "bzip2", "capnproto", "catch2", "eigen", "ffmpeg", "json11",
+  "libjpeg", "libyuv", "ncurses", "zeromq", "zstd",
+]
+runtime_dependencies = []
+if AGNOS:
+  for name in runtime_dependency_names:
+    try:
+      runtime_dependencies.append(importlib.import_module(name))
+    except ImportError:
+      pass
+runtime_include_dirs = [dependency.INCLUDE_DIR for dependency in runtime_dependencies]
+runtime_lib_dirs = [dependency.LIB_DIR for dependency in runtime_dependencies]
 
 lenv = {
   "PATH": os.environ['PATH'],
@@ -196,7 +214,7 @@ env = Environment(
     "-Wno-vla-cxx-extension",
   ] + cflags + ccflags,
 
-  CPPPATH=cpppath + [
+  CPPPATH=runtime_include_dirs + cpppath + [
     "#",
     "#third_party/acados/include",
     "#third_party/acados/include/blasfeo/include",
@@ -223,7 +241,7 @@ env = Environment(
 
   CFLAGS=["-std=gnu11"] + cflags,
   CXXFLAGS=["-std=c++1z"] + cxxflags,
-  LIBPATH=libpath + [
+  LIBPATH=runtime_lib_dirs + libpath + [
     "#msgq_repo",
     "#third_party",
     "#selfdrive/pandad",
