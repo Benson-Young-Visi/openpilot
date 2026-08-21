@@ -2,8 +2,14 @@ import os
 import json
 Import('qt_env', 'arch', 'common', 'messaging', 'visionipc', 'transformations')
 
+ffmpeg_libs = ['avcodec', 'avformat', 'avutil']
+if arch == 'larch64':
+  # AGNOS 18 packages FFmpeg and its dependencies as static archives.
+  ffmpeg_libs = ['avformat', 'avcodec', 'swresample', 'avutil',
+                 'x264', 'va-drm', 'va', 'drm', 'z', 'm', 'pthread', 'dl']
+
 base_libs = [common, messaging, visionipc, transformations,
-             'm', 'OpenCL', 'ssl', 'crypto', 'pthread', 'avcodec', 'avformat', 'avutil', 'z', 'yuv'] + qt_env["LIBS"]
+             'm', 'OpenCL', 'ssl', 'crypto', 'pthread'] + ffmpeg_libs + ['yuv'] + qt_env["LIBS"]
 
 if arch == 'larch64':
   base_libs.append('EGL')
