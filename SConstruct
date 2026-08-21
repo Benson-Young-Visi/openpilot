@@ -370,7 +370,7 @@ other_sconscripts = [
   'opendbc/can/SConscript',
   'panda/SConscript',
 ]
-if not GetOption('minimal'):
+if GetOption('extras'):
   other_sconscripts.insert(0, 'body/board/SConscript')
 SConscript(other_sconscripts)
 
