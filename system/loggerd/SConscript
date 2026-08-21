@@ -1,8 +1,12 @@
 Import('env', 'arch', 'messaging', 'common', 'visionipc')
 
-libs = [common, messaging, visionipc,
-        'z', 'avformat', 'avcodec', 'swscale',
-        'avutil', 'yuv', 'OpenCL', 'pthread']
+ffmpeg_libs = ['z', 'avformat', 'avcodec', 'swscale', 'avutil']
+if arch == 'larch64':
+  # AGNOS 18 packages FFmpeg and its dependencies as static archives, without swscale.
+  ffmpeg_libs = ['avformat', 'avcodec', 'swresample', 'avutil',
+                 'x264', 'va-drm', 'va', 'drm', 'z', 'm', 'pthread', 'dl']
+
+libs = [common, messaging, visionipc] + ffmpeg_libs + ['yuv', 'OpenCL', 'pthread']
 
 src = ['logger.cc', 'video_writer.cc', 'encoder/encoder.cc', 'encoder/v4l_encoder.cc']
 if arch != "larch64":
