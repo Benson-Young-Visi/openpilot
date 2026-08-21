@@ -364,12 +364,15 @@ messaging = [socketmaster, msgq, 'zmq', 'capnp', 'kj',]
 Export('messaging')
 
 
-# Build other submodules
-SConscript([
-  'body/board/SConscript',
+# Build other submodules. comma devices do not use the comma body firmware, and
+# current AGNOS images do not include the legacy ARM linker runtime it needs.
+other_sconscripts = [
   'opendbc/can/SConscript',
   'panda/SConscript',
-])
+]
+if not GetOption('minimal'):
+  other_sconscripts.insert(0, 'body/board/SConscript')
+SConscript(other_sconscripts)
 
 # Build rednose library
 SConscript(['rednose/SConscript'])
